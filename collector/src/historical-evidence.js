@@ -247,7 +247,14 @@ function evidenceQueueItems(db, maximum) {
   return db.prepare(`
     SELECT * FROM historical_backfill_items
     WHERE item_kind = 'document' AND stage = 'lifecycle_verified'
-      AND (implementation_status = 'pending' OR outcome_status = 'pending')
+      AND (
+        implementation_status = 'pending' OR outcome_status = 'pending'
+        OR EXISTS (
+          SELECT 1 FROM historical_evidence_searches search
+          WHERE search.item_id = historical_backfill_items.id
+            AND search.corpus_watermark < (SELECT coalesce(max(id), 0) FROM historical_backfill_items)
+        )
+      )
       AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     ORDER BY coalesce(source_year, 9999), id
     LIMIT ?

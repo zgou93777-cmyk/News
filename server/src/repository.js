@@ -8,6 +8,9 @@ function escapeLike(value) {
 
 function reviewStatus(row) {
   if ((row.open_ambiguities || 0) > 0) return 'ambiguous';
+  if (['verified', 'partial', 'ambiguous', 'watching'].includes(row.historical_review_status)) {
+    return row.historical_review_status;
+  }
   if ((row.verified_forecasts || 0) > 0) return 'verified';
   if ((row.partial_forecasts || 0) > 0) return 'partial';
   return 'watching';
@@ -23,11 +26,17 @@ const EVENT_TYPE_LABELS = Object.freeze({
 
 const ARTICLE_ORDER_SQL = 'd.published_at DESC, d.importance DESC, d.id DESC';
 const SHANGHAI_DATE_SQL = "date('now', '+8 hours')";
+const HISTORICAL_REVIEW_STATUS_SQL = `(SELECT hav.review_status
+  FROM historical_public_releases hpr
+  JOIN historical_analysis_versions hav ON hav.id = hpr.assessment_version_id
+  WHERE hpr.document_id = d.id
+  ORDER BY hpr.id DESC LIMIT 1)`;
 const REVIEW_STATUS_SQL = `CASE
   WHEN EXISTS (
     SELECT 1 FROM ambiguities am
     WHERE am.document_id = d.id AND am.status IN ('open', 'watching', 'disputed')
   ) THEN 'ambiguous'
+  WHEN (${HISTORICAL_REVIEW_STATUS_SQL}) IS NOT NULL THEN (${HISTORICAL_REVIEW_STATUS_SQL})
   WHEN EXISTS (
     SELECT 1 FROM forecasts f
     WHERE f.analysis_version_id = av.id AND f.status = 'verified'
@@ -96,7 +105,9 @@ function mapArticle(row) {
       status: reviewStatus(row),
       conclusion: row.review_conclusion || row.analysis_evidence_summary || '尚待更多公开证据验证。',
       verifiedAt: row.reviewed_at || row.analysis_created_at || row.published_at,
-      confidence: row.review_confidence || '中等'
+      confidence: row.historical_review_confidence != null
+        ? `${Math.round(Number(row.historical_review_confidence) * 100)}%`
+        : row.review_confidence || '中等'
     }
   };
 }
@@ -306,6 +317,11 @@ function listArticles(db, filters) {
       av.evidence_summary AS analysis_evidence_summary,
       av.version AS analysis_version,
       av.created_at AS analysis_created_at,
+      (${HISTORICAL_REVIEW_STATUS_SQL}) AS historical_review_status,
+      (SELECT hav.confidence
+        FROM historical_public_releases hpr
+        JOIN historical_analysis_versions hav ON hav.id = hpr.assessment_version_id
+        WHERE hpr.document_id = d.id ORDER BY hpr.id DESC LIMIT 1) AS historical_review_confidence,
       (SELECT COUNT(*) FROM ambiguities am WHERE am.document_id = d.id AND am.status IN ('open', 'watching', 'disputed')) AS open_ambiguities,
       (SELECT COUNT(*) FROM forecasts f WHERE f.analysis_version_id = av.id) AS forecast_count,
       (SELECT COUNT(*) FROM forecasts f WHERE f.analysis_version_id = av.id AND f.status = 'verified') AS verified_forecasts,
@@ -340,6 +356,11 @@ function getArticleDetail(db, id) {
       s.kind AS source_kind,
       s.authority_level,
       s.official_url AS source_official_url,
+      (${HISTORICAL_REVIEW_STATUS_SQL}) AS historical_review_status,
+      (SELECT hav.confidence
+        FROM historical_public_releases hpr
+        JOIN historical_analysis_versions hav ON hav.id = hpr.assessment_version_id
+        WHERE hpr.document_id = d.id ORDER BY hpr.id DESC LIMIT 1) AS historical_review_confidence,
       (SELECT COUNT(DISTINCT adv.visitor_hash) FROM article_daily_visitors adv WHERE adv.document_id = d.id) AS view_total,
       (SELECT COUNT(*) FROM article_daily_visitors adv WHERE adv.document_id = d.id AND adv.view_date = ${SHANGHAI_DATE_SQL}) AS view_today
     FROM documents d
@@ -521,10 +542,14 @@ function getArticleDetail(db, id) {
   const hasVerifiedForecast = currentForecasts.some((item) => item.status === 'verified');
   const hasPartialForecast = currentForecasts.some((item) => item.status === 'partially_verified');
   article.review = {
-    status: hasOpenAmbiguity ? 'ambiguous' : hasVerifiedForecast ? 'verified' : hasPartialForecast ? 'partial' : 'watching',
+    status: hasOpenAmbiguity
+      ? 'ambiguous'
+      : row.historical_review_status || (hasVerifiedForecast ? 'verified' : hasPartialForecast ? 'partial' : 'watching'),
     conclusion: latestAssessment?.conclusion || currentAnalysis?.evidenceSummary || '尚待更多公开证据验证。',
     verifiedAt: latestAssessment?.asOfDate || currentAnalysis?.createdAt || article.publishedAt,
-    confidence: latestAssessment?.score == null ? '待评估' : `${latestAssessment.score}/100`
+    confidence: row.historical_review_confidence != null
+      ? `${Math.round(Number(row.historical_review_confidence) * 100)}%`
+      : latestAssessment?.score == null ? '待评估' : `${latestAssessment.score}/100`
   };
   article.analysisLead = currentAnalysis?.headline || article.summary;
   article.content = [

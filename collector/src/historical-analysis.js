@@ -402,6 +402,7 @@ module.exports = {
   METHODOLOGY,
   assessHistoricalPolicy,
   inputChecksum,
+  loadAnalysisInputs,
   reviewStatusFor,
   runHistoricalAnalysisQueue
 };

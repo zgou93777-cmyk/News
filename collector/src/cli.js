@@ -19,6 +19,7 @@ const { runHistoricalPdfQueue } = require('./historical-pdf');
 const { runHistoricalVerificationQueue } = require('./historical-verification');
 const { runHistoricalEvidenceQueue } = require('./historical-evidence');
 const { runHistoricalAnalysisQueue } = require('./historical-analysis');
+const { runHistoricalReleaseQueue } = require('./historical-release');
 const { runCollection, runSeedBackfill } = require('./pipeline');
 const { runReconcileLineage } = require('./reconcile-lineage');
 const { runReconcileRelevance } = require('./reconcile');
@@ -52,6 +53,7 @@ const HELP = `Usage:
   node src/cli.js --historical-verify [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-evidence [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-analyze [--adaptive-load] [--max-items 100]
+  node src/cli.js --historical-release [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-status
   node src/cli.js --historical-audit
   node src/cli.js --historical-review <queue-id> --review-file <review.json> [--dry-run]
@@ -73,6 +75,7 @@ Options:
   --historical-verify      Verify private source metadata and official lifecycle evidence
   --historical-evidence    Find implementation, paid funding and outcome evidence
   --historical-analyze     Apply auditable four-status analysis and release gates
+  --historical-release     Publish only ready items that pass database release guards
   --adaptive-load          Recheck CPU and memory pressure between historical items
   --historical-status      Show private queue counts by stage
   --historical-audit       Audit recovery boundaries, integrity and current capacity
@@ -103,6 +106,7 @@ function parseArguments(argv) {
     else if (argument === '--historical-verify') options.historicalVerify = true;
     else if (argument === '--historical-evidence') options.historicalEvidence = true;
     else if (argument === '--historical-analyze') options.historicalAnalyze = true;
+    else if (argument === '--historical-release') options.historicalRelease = true;
     else if (argument === '--historical-status') options.historicalStatus = true;
     else if (argument === '--historical-audit') options.historicalAudit = true;
     else if (argument === '--adaptive-load') options.adaptiveLoad = true;
@@ -161,11 +165,13 @@ function parseArguments(argv) {
     }
   }
   if (options.adaptiveLoad && !options.historicalProcess && !options.historicalPdfProcess
-      && !options.historicalVerify && !options.historicalEvidence && !options.historicalAnalyze) {
+      && !options.historicalVerify && !options.historicalEvidence && !options.historicalAnalyze
+      && !options.historicalRelease) {
     throw new Error('--adaptive-load is only valid with a historical processing mode');
   }
   if (options.minItems !== undefined && !options.historicalProcess && !options.historicalPdfProcess
-      && !options.historicalVerify && !options.historicalEvidence && !options.historicalAnalyze) {
+      && !options.historicalVerify && !options.historicalEvidence && !options.historicalAnalyze
+      && !options.historicalRelease) {
     throw new Error('--min-items is only valid with a historical processing mode');
   }
   const modes = [
@@ -174,7 +180,7 @@ function parseArguments(argv) {
     Boolean(options.reconcileRelevance), Boolean(options.reconcileLineage),
     Boolean(options.historicalDiscover), Boolean(options.historicalProcess), Boolean(options.historicalPdfProcess),
     Boolean(options.historicalVerify), Boolean(options.historicalEvidence), Boolean(options.historicalAnalyze),
-    Boolean(options.historicalStatus),
+    Boolean(options.historicalRelease), Boolean(options.historicalStatus),
     Boolean(options.historicalAudit),
     Boolean(options.historicalReview)
   ].filter(Boolean).length;
@@ -241,6 +247,8 @@ async function main() {
         ? await runHistoricalEvidenceQueue(db, { ...options, notify: false })
       : options.historicalAnalyze
         ? await runHistoricalAnalysisQueue(db, { ...options, notify: false })
+      : options.historicalRelease
+        ? await runHistoricalReleaseQueue(db, { ...options, notify: false })
       : options.historicalStatus
         ? { status: 'succeeded', queue: historicalQueueStats(db) }
       : options.historicalAudit

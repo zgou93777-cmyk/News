@@ -406,6 +406,66 @@ BEGIN
   SELECT RAISE(ABORT, 'historical analysis versions are immutable; deletion is not allowed');
 END;
 
+CREATE TABLE IF NOT EXISTS historical_public_releases (
+  id INTEGER PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE RESTRICT,
+  assessment_version_id INTEGER NOT NULL REFERENCES historical_analysis_versions(id) ON DELETE RESTRICT,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE RESTRICT,
+  analysis_version_id INTEGER NOT NULL REFERENCES analysis_versions(id) ON DELETE RESTRICT,
+  action TEXT NOT NULL CHECK (action IN ('inserted', 'linked_existing')),
+  released_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE(item_id, assessment_version_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_public_releases_document
+ON historical_public_releases(document_id, id DESC);
+
+CREATE TRIGGER IF NOT EXISTS historical_public_release_insert_guard
+BEFORE INSERT ON historical_public_releases
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM historical_backfill_items item
+    JOIN historical_analysis_versions assessment
+      ON assessment.id = NEW.assessment_version_id AND assessment.item_id = item.id
+    JOIN documents document ON document.id = NEW.document_id
+    JOIN analysis_versions analysis ON analysis.id = NEW.analysis_version_id
+      AND analysis.document_id = document.id AND analysis.status = 'published'
+    WHERE item.id = NEW.item_id
+      AND item.stage = 'ready' AND item.analysis_status = 'verified'
+      AND assessment.release_eligible = 1 AND assessment.confidence >= 0.95
+      AND assessment.methodology IN ('historical-evidence-gates-v1', 'human-review-v1')
+      AND json_array_length(assessment.gates_json) > 0
+      AND NOT EXISTS (
+        SELECT 1 FROM json_each(assessment.gates_json) gate
+        WHERE json_extract(gate.value, '$.passed') IS NOT 1
+      )
+      AND document.status <> 'draft'
+      AND document.original_url = item.source_url
+      AND document.title = item.title
+      AND document.issuer = item.issuer
+      AND document.document_number = item.document_number
+      AND document.document_date = substr(item.published_at, 1, 10)
+      AND document.published_at = item.published_at
+      AND coalesce(document.effective_at, '') = coalesce(item.effective_at, '')
+      AND document.content_text = item.content_text
+      AND document.checksum = item.checksum
+      AND analysis.model_name = assessment.methodology
+  ) THEN RAISE(ABORT, 'historical public release guard rejected the mapping') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_public_releases_immutable_update
+BEFORE UPDATE ON historical_public_releases
+BEGIN
+  SELECT RAISE(ABORT, 'historical public releases are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_public_releases_immutable_delete
+BEFORE DELETE ON historical_public_releases
+BEGIN
+  SELECT RAISE(ABORT, 'historical public releases cannot be deleted');
+END;
+
 CREATE TRIGGER IF NOT EXISTS historical_backfill_ready_insert_guard
 BEFORE INSERT ON historical_backfill_items
 WHEN NEW.stage IN ('ready', 'published')
@@ -422,6 +482,23 @@ BEGIN
     trim(NEW.content_text) = '' OR trim(NEW.checksum) = '' OR
     json_array_length(NEW.evidence_urls_json) = 0 OR
     trim(NEW.review_notes) = '' OR trim(NEW.reviewed_by) = '' OR NEW.reviewed_at IS NULL OR
+    NOT EXISTS (
+      SELECT 1 FROM historical_analysis_versions assessment
+      WHERE assessment.id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
+        AND assessment.item_id = NEW.id AND assessment.release_eligible = 1
+        AND assessment.review_status = json_extract(NEW.analysis_json, '$.reviewStatus')
+        AND json_array_length(assessment.gates_json) > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM json_each(assessment.gates_json) gate
+          WHERE json_extract(gate.value, '$.passed') IS NOT 1
+        )
+    ) OR
+    (NEW.stage = 'published' AND NOT EXISTS (
+      SELECT 1 FROM historical_public_releases release
+      WHERE release.item_id = NEW.id
+        AND release.assessment_version_id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
+        AND release.document_id = NEW.document_id
+    )) OR
     (NEW.stage = 'published' AND NEW.document_id IS NULL)
   THEN RAISE(ABORT, 'historical item is not fully verified for release') END;
 END;
@@ -442,6 +519,23 @@ BEGIN
     trim(NEW.content_text) = '' OR trim(NEW.checksum) = '' OR
     json_array_length(NEW.evidence_urls_json) = 0 OR
     trim(NEW.review_notes) = '' OR trim(NEW.reviewed_by) = '' OR NEW.reviewed_at IS NULL OR
+    NOT EXISTS (
+      SELECT 1 FROM historical_analysis_versions assessment
+      WHERE assessment.id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
+        AND assessment.item_id = NEW.id AND assessment.release_eligible = 1
+        AND assessment.review_status = json_extract(NEW.analysis_json, '$.reviewStatus')
+        AND json_array_length(assessment.gates_json) > 0
+        AND NOT EXISTS (
+          SELECT 1 FROM json_each(assessment.gates_json) gate
+          WHERE json_extract(gate.value, '$.passed') IS NOT 1
+        )
+    ) OR
+    (NEW.stage = 'published' AND NOT EXISTS (
+      SELECT 1 FROM historical_public_releases release
+      WHERE release.item_id = NEW.id
+        AND release.assessment_version_id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
+        AND release.document_id = NEW.document_id
+    )) OR
     (NEW.stage = 'published' AND NEW.document_id IS NULL)
   THEN RAISE(ABORT, 'historical item is not fully verified for release') END;
 END;
@@ -451,5 +545,5 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '7')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '8')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

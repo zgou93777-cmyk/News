@@ -17,6 +17,7 @@ ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-verify --adaptive-load --min-items 5 --max-items 100
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-evidence --adaptive-load --min-items 5 --max-items 100
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-analyze --adaptive-load --min-items 5 --max-items 100
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-release --adaptive-load --min-items 5 --max-items 100
 TimeoutStartSec=50min
 MemoryMax=512M
 CPUQuota=150%

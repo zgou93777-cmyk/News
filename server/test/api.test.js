@@ -40,7 +40,7 @@ test('health and categories expose database state', async () => {
   assert.equal(healthResponse.headers.get('x-content-type-options'), 'nosniff');
   const health = await healthResponse.json();
   assert.equal(health.status, 'ok');
-  assert.equal(health.schemaVersion, '7');
+  assert.equal(health.schemaVersion, '8');
   assert.equal(health.pushEnabled, true);
 
   const categories = await (await fetch(`${origin}/api/categories`)).json();

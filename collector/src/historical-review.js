@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const LIFECYCLE_STATUSES = new Set(['verified', 'not_applicable']);
 const EVIDENCE_STATUSES = new Set(['verified', 'not_found', 'not_applicable']);
@@ -121,22 +122,66 @@ function runHistoricalReview(db, options = {}) {
   const review = validateHistoricalReview(item, input);
 
   if (!options.dryRun) {
-    db.prepare(`
-      UPDATE historical_backfill_items SET
-        title = ?, issuer = ?, document_number = ?, published_at = ?, effective_at = ?, repealed_at = ?,
-        stage = 'ready', source_status = 'verified', metadata_status = 'verified',
-        lifecycle_status = ?, implementation_status = ?, outcome_status = ?, analysis_status = 'verified',
-        evidence_urls_json = ?, policy_cycle_json = ?, implementation_json = ?, outcome_json = ?, analysis_json = ?,
-        review_notes = ?, reviewed_by = ?, reviewed_at = ?, last_error = '', next_attempt_at = NULL,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ?
-    `).run(
-      review.title, review.issuer, review.documentNumber, review.publishedAt, review.effectiveAt, review.repealedAt,
-      review.lifecycleStatus, review.implementationStatus, review.outcomeStatus,
-      JSON.stringify(review.evidenceUrls), JSON.stringify(review.policyCycle), JSON.stringify(review.implementationEvidence),
-      JSON.stringify(review.outcomeEvidence), JSON.stringify(review.analysis), review.reviewNotes,
-      review.reviewedBy, review.reviewedAt, id
-    );
+    const reviewStatus = review.analysis.ambiguities.length
+      ? 'ambiguous'
+      : review.implementationStatus === 'verified' && review.outcomeStatus === 'verified'
+        ? 'verified'
+        : review.implementationStatus === 'verified' || review.outcomeStatus === 'verified'
+          ? 'partial'
+          : 'watching';
+    const gates = [{
+      name: 'human_review_validation',
+      passed: true,
+      reason: `结构化审核文件已由 ${review.reviewedBy} 逐项确认并承担审核责任`
+    }];
+    const assessment = {
+      ...review.analysis,
+      reviewStatus,
+      confidence: 0.95,
+      gates,
+      methodology: 'human-review-v1'
+    };
+    const fingerprint = crypto.createHash('sha256').update(JSON.stringify({
+      itemId: item.id,
+      sourceChecksum: item.checksum,
+      review
+    }), 'utf8').digest('hex');
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const version = Number(db.prepare(`
+        SELECT coalesce(max(version), 0) + 1 AS version
+        FROM historical_analysis_versions WHERE item_id = ?
+      `).get(id).version);
+      const assessmentId = Number(db.prepare(`
+        INSERT INTO historical_analysis_versions (
+          item_id, version, input_checksum, review_status, confidence,
+          release_eligible, gates_json, analysis_json, methodology
+        ) VALUES (?, ?, ?, ?, 0.95, 1, ?, ?, 'human-review-v1')
+      `).run(
+        id, version, fingerprint, reviewStatus, JSON.stringify(gates), JSON.stringify(assessment)
+      ).lastInsertRowid);
+      const persistedAnalysis = { ...assessment, assessmentVersionId: assessmentId, assessmentVersion: version };
+      db.prepare(`
+        UPDATE historical_backfill_items SET
+          title = ?, issuer = ?, document_number = ?, published_at = ?, effective_at = ?, repealed_at = ?,
+          stage = 'ready', source_status = 'verified', metadata_status = 'verified',
+          lifecycle_status = ?, implementation_status = ?, outcome_status = ?, analysis_status = 'verified',
+          evidence_urls_json = ?, policy_cycle_json = ?, implementation_json = ?, outcome_json = ?, analysis_json = ?,
+          review_notes = ?, reviewed_by = ?, reviewed_at = ?, last_error = '', next_attempt_at = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ?
+      `).run(
+        review.title, review.issuer, review.documentNumber, review.publishedAt, review.effectiveAt, review.repealedAt,
+        review.lifecycleStatus, review.implementationStatus, review.outcomeStatus,
+        JSON.stringify(review.evidenceUrls), JSON.stringify(review.policyCycle), JSON.stringify(review.implementationEvidence),
+        JSON.stringify(review.outcomeEvidence), JSON.stringify(persistedAnalysis), review.reviewNotes,
+        review.reviewedBy, review.reviewedAt, id
+      );
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
   }
   return { status: 'succeeded', dryRun: Boolean(options.dryRun), id, stage: 'ready', reviewedBy: review.reviewedBy };
 }
