@@ -286,6 +286,27 @@ test('an AI-assisted PDF segmentation remains private until human verification',
         ambiguities: [],
         evidenceQuotes: [title]
       },
+      framework: {
+        bottom_line: 'The candidate remains private until a human verifies the PDF segmentation.',
+        policy_problem: {
+          text: 'Verify the OCR policy candidate before publication.',
+          evidence_refs: [{ source_id: 'current_policy', quote: title }]
+        },
+        policy_tools: [{
+          label: 'PDF review', detail: 'Use the reviewed PDF transcription as the source record.',
+          evidence_refs: [{ source_id: 'current_policy', quote: title }]
+        }],
+        affected_groups: [{
+          label: 'Reviewers', detail: 'Responsible reviewers must verify the candidate.',
+          evidence_refs: [{ source_id: 'current_policy', quote: title }]
+        }],
+        execution_path: [{
+          label: 'Segmentation review', detail: 'Human verification precedes controlled publication.',
+          evidence_refs: [{ source_id: 'current_policy', quote: title }]
+        }],
+        historical_comparison: [],
+        history_boundary: 'No verified predecessor was supplied.'
+      },
       reviewNotes: 'Reviewed candidate whose segmentation remains AI-assisted.',
       reviewedBy: 'reviewer-1',
       reviewedAt: '2026-07-26T12:00:00Z'

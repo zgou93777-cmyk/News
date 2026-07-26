@@ -7,6 +7,11 @@ const test = require('node:test');
 const { openDatabase } = require('../../server/src/db');
 const { getArticleDetail, listArticles } = require('../../server/src/repository');
 const { inputChecksum, loadAnalysisInputs } = require('../src/historical-analysis');
+const {
+  loadFrameworkEvidence,
+  normalizeHistoricalFramework,
+  storeFrameworkVersion
+} = require('../src/historical-framework');
 const { runHistoricalReleaseQueue } = require('../src/historical-release');
 
 function checksum(text) {
@@ -114,6 +119,35 @@ function createReadyItem(db, suffix = '21') {
       release_eligible, gates_json, analysis_json, methodology
     ) VALUES (?, 1, ?, 'verified', 0.99, 1, ?, ?, 'historical-evidence-gates-v2')
   `).run(itemId, fingerprint, JSON.stringify(gates), JSON.stringify(analysis)).lastInsertRowid);
+  const assessment = db.prepare('SELECT * FROM historical_analysis_versions WHERE id = ?').get(assessmentId);
+  const evidenceBundle = loadFrameworkEvidence(db, item, assessment);
+  const sourceId = `item:${itemId}`;
+  const frameworkPayload = {
+    bottom_line: '这项政策已经形成正式文本，但实施和结果仍需分别核验。',
+    policy_problem: {
+      text: '明确历史政策的适用问题和执行边界。',
+      evidence_refs: [{ source_id: sourceId, quote: title }]
+    },
+    policy_tools: [{
+      label: '正式文件', detail: '通过正式政策文本确定任务。',
+      evidence_refs: [{ source_id: sourceId, quote: `国发〔2000〕${suffix}号` }]
+    }],
+    affected_groups: [{
+      label: '执行部门', detail: '由文件涉及的执行部门落实。',
+      evidence_refs: [{ source_id: sourceId, quote: title }]
+    }],
+    execution_path: [{
+      label: '发布与落实', detail: '先确认发文，再分别核验实施和结果。',
+      evidence_refs: [{ source_id: sourceId, quote: '正式政策原文。' }]
+    }],
+    historical_comparison: [],
+    history_boundary: '没有已核验的前序政策关系，不作历史对比。'
+  };
+  const normalizedFramework = normalizeHistoricalFramework(frameworkPayload, evidenceBundle, analysis);
+  const framework = storeFrameworkVersion(
+    db, item, assessment, evidenceBundle, normalizedFramework,
+    frameworkPayload, 'release-test-model'
+  );
   db.prepare(`
     UPDATE historical_backfill_items SET
       stage = 'ready', analysis_status = 'verified',
@@ -121,7 +155,13 @@ function createReadyItem(db, suffix = '21') {
       reviewed_by = 'historical-evidence-gates-v2',
       reviewed_at = '2026-07-26T12:00:00+08:00'
     WHERE id = ?
-  `).run(JSON.stringify({ ...analysis, assessmentVersionId: assessmentId, assessmentVersion: 1 }), itemId);
+  `).run(JSON.stringify({
+    ...analysis,
+    assessmentVersionId: assessmentId,
+    assessmentVersion: 1,
+    frameworkVersionId: framework.id,
+    frameworkVersion: framework.version
+  }), itemId);
   const cohortId = Number(db.prepare(`
     INSERT INTO historical_release_cohorts (
       target_size, status, manifest_checksum, regression_json
@@ -173,6 +213,8 @@ test('release worker publishes one traceable article and exposes its four-status
     const detail = getArticleDetail(db, item.document_id);
     assert.equal(detail.article.review.status, 'verified');
     assert.match(detail.article.review.conclusion, /结果不自动证明政策因果/);
+    assert.equal(detail.article.analysisFramework.ready, true);
+    assert.equal(detail.article.analysisFramework.problem, '明确历史政策的适用问题和执行边界。');
 
     const second = await runHistoricalReleaseQueue(db, { maxItems: 1 }, {
       loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })

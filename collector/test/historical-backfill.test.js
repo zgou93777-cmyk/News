@@ -201,6 +201,27 @@ test('human review requires official evidence and a complete cycle/implementatio
       ambiguities: ['结果数据缺失'],
       evidenceQuotes: ['自2000年2月1日起施行。']
     },
+    framework: {
+      bottom_line: '政策已经建立测试制度，但结果证据仍不完整。',
+      policy_problem: {
+        text: '建立测试制度并明确实施边界。',
+        evidence_refs: [{ source_id: 'review:implementation:0', quote: '自2000年2月1日起施行。' }]
+      },
+      policy_tools: [{
+        label: '实施细则', detail: '以实施细则确定生效安排。',
+        evidence_refs: [{ source_id: 'review:implementation:0', quote: '自2000年2月1日起施行。' }]
+      }],
+      affected_groups: [{
+        label: '执行主体', detail: '执行主体按实施日期落实制度。',
+        evidence_refs: [{ source_id: 'review:implementation:0', quote: '自2000年2月1日起施行。' }]
+      }],
+      execution_path: [{
+        label: '正式施行', detail: '从正式文件进入实施阶段。',
+        evidence_refs: [{ source_id: 'review:implementation:0', quote: '自2000年2月1日起施行。' }]
+      }],
+      historical_comparison: [],
+      history_boundary: '没有提供已核验前序政策，不作历史对比。'
+    },
     reviewNotes: '逐项核对原文、实施细则和统计口径；结果仍待后续证据。',
     reviewedBy: 'editor-1',
     reviewedAt: '2026-07-26T12:00:00+08:00'
@@ -305,6 +326,7 @@ test('historical audit exposes recoverable work, blocked stages and integrity ri
       scheduledRetry: 1,
       awaitingPdfOcr: 1,
       awaitingVerification: 1,
+      awaitingFramework: 0,
       indexedContainers: 0,
       readyForRelease: 0,
       published: 0
@@ -326,6 +348,7 @@ test('historical audit exposes recoverable work, blocked stages and integrity ri
       staleReadyAssessments: 0,
       evidenceSourceViolations: 0,
       assessmentLinkViolations: 0,
+      frameworkLinkViolations: 0,
       publicReleaseViolations: 0,
       publicDocumentMismatches: 0,
       criticalFailures: 0

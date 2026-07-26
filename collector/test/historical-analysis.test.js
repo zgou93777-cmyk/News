@@ -112,7 +112,7 @@ test('four-status rules distinguish verified, partial, ambiguous and watching', 
   ), 'ambiguous');
 });
 
-test('complete high-confidence evidence creates an immutable private ready assessment', async () => {
+test('complete high-confidence evidence creates an immutable assessment awaiting a cited framework', async () => {
   const db = openDatabase(':memory:');
   try {
     const targetId = insertTarget(db, '11');
@@ -126,10 +126,11 @@ test('complete high-confidence evidence creates an immutable private ready asses
     const result = await runHistoricalAnalysisQueue(db, { maxItems: 1 }, {
       loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
     });
-    assert.equal(result.ready, 1);
+    assert.equal(result.ready, 0);
+    assert.equal(result.awaitingFramework, 1);
     assert.equal(result.byStatus.verified, 1);
     const item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(targetId);
-    assert.equal(item.stage, 'ready');
+    assert.equal(item.stage, 'lifecycle_verified');
     assert.equal(item.analysis_status, 'verified');
     const analysis = JSON.parse(item.analysis_json);
     assert.equal(analysis.reviewStatus, 'verified');

@@ -57,6 +57,27 @@ function reviewInput(item) {
       ambiguities: [],
       evidenceQuotes: [item.quote]
     },
+    framework: {
+      bottom_line: 'The reviewed policy remains limited to claims in the official source.',
+      policy_problem: {
+        text: 'Define the policy issue without adding unsupported claims.',
+        evidence_refs: [{ source_id: 'current_policy', quote: item.quote }]
+      },
+      policy_tools: [{
+        label: 'Official text', detail: 'Use the official text as the policy instrument record.',
+        evidence_refs: [{ source_id: 'current_policy', quote: item.quote }]
+      }],
+      affected_groups: [{
+        label: 'Reviewed audience', detail: 'Limit affected groups to those supported by the source.',
+        evidence_refs: [{ source_id: 'current_policy', quote: item.quote }]
+      }],
+      execution_path: [{
+        label: 'Review', detail: 'Verify the official text before controlled publication.',
+        evidence_refs: [{ source_id: 'current_policy', quote: item.quote }]
+      }],
+      historical_comparison: [],
+      history_boundary: 'No verified predecessor was supplied.'
+    },
     reviewNotes: 'Compared the queued transcription with the official source.',
     reviewedBy: 'reviewer-1',
     reviewedAt: '2026-07-26T12:00:00Z'
@@ -103,6 +124,7 @@ test('human review stores one immutable submission and is idempotent', () => {
     assert.equal(repeated.assessmentId, first.assessmentId);
     assert.equal(db.prepare('SELECT count(*) AS count FROM historical_review_submissions').get().count, 1);
     assert.equal(db.prepare('SELECT count(*) AS count FROM historical_analysis_versions').get().count, 1);
+    assert.equal(db.prepare('SELECT count(*) AS count FROM historical_analysis_frameworks').get().count, 1);
   } finally {
     db.close();
     fs.rmSync(directory, { recursive: true, force: true });

@@ -6,6 +6,11 @@ const test = require('node:test');
 
 const { openDatabase } = require('../../server/src/db');
 const { approveHistoricalCohort, auditHistoricalCohort } = require('../src/historical-cohort');
+const {
+  loadFrameworkEvidence,
+  normalizeHistoricalFramework,
+  storeFrameworkVersion
+} = require('../src/historical-framework');
 const { runHistoricalReleaseQueue } = require('../src/historical-release');
 
 function checksum(value) {
@@ -49,6 +54,24 @@ function createHumanReadyItem(db, suffix) {
       release_eligible, gates_json, analysis_json, methodology
     ) VALUES (?, 1, ?, 'watching', 0.95, 1, ?, ?, 'human-review-v1')
   `).run(itemId, inputChecksum, JSON.stringify(gates), JSON.stringify(analysis)).lastInsertRowid);
+  const item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(itemId);
+  const assessment = db.prepare('SELECT * FROM historical_analysis_versions WHERE id = ?').get(assessmentId);
+  const evidenceBundle = loadFrameworkEvidence(db, item, assessment);
+  const reference = [{ source_id: `item:${itemId}`, quote }];
+  const frameworkPayload = {
+    bottom_line: '该样本只用于验证发布门禁，不外推政策效果。',
+    policy_problem: { text: '验证历史政策首批发布的完整流程。', evidence_refs: reference },
+    policy_tools: [{ label: '人工复核', detail: '通过人工复核确认发布边界。', evidence_refs: reference }],
+    affected_groups: [{ label: '审核人员', detail: '审核人员负责确认引用和边界。', evidence_refs: reference }],
+    execution_path: [{ label: '审核发布', detail: '先完成审核，再进入受控发布。', evidence_refs: reference }],
+    historical_comparison: [],
+    history_boundary: '回归样本没有前序政策关系。'
+  };
+  const normalizedFramework = normalizeHistoricalFramework(frameworkPayload, evidenceBundle, analysis);
+  const framework = storeFrameworkVersion(
+    db, item, assessment, evidenceBundle, normalizedFramework,
+    frameworkPayload, 'cohort-test-model'
+  );
   db.prepare(`
     INSERT INTO historical_review_submissions (
       item_id, assessment_version_id, source_checksum, review_checksum,
@@ -70,7 +93,9 @@ function createHumanReadyItem(db, suffix) {
   `).run(JSON.stringify({
     ...analysis,
     assessmentVersionId: assessmentId,
-    assessmentVersion: 1
+    assessmentVersion: 1,
+    frameworkVersionId: framework.id,
+    frameworkVersion: framework.version
   }), itemId);
   return itemId;
 }
