@@ -45,8 +45,10 @@ accepted policy-evidence quote as a structured citation with its official URL,
 observed date, confidence, and source state. It also stores both complete search
 scopes; quotes are not truncated to a display-only sample.
 
-Passing an assessment changes the private queue item to `ready`. Failing an
-assessment leaves it private and records the failed gate names. Every distinct
+Passing this assessment records a release-eligible four-status version, but the
+item remains private at `lifecycle_verified` until the structured-framework worker
+finishes its own citation checks. Failing an assessment leaves it private and
+records the failed gate names. Every distinct
 input fingerprint creates an immutable row in `historical_analysis_versions`.
 Manual assessments additionally retain the complete normalized review JSON, source
 checksum, reviewer identity, review time, and assessment mapping in the immutable
@@ -57,3 +59,5 @@ all require that mapping to remain exact.
 node collector/src/cli.js --historical-analyze \
   --adaptive-load --min-items 5 --max-items 100
 ```
+
+The next required stage is documented in `HISTORICAL_FRAMEWORK_PIPELINE.md`.

@@ -37,6 +37,6 @@ journalctl -u policy-monitor.service -u policy-monitor-historical.service --sinc
 ```
 
 The historical systemd job runs a final integrity audit after discovery, extraction,
-OCR, verification, evidence search, classification, and release. A broken assessment
-or private-to-public mapping makes the unit fail and invokes the configured alert
-service.
+OCR, verification, evidence search, classification, citation-checked structured
+analysis, and release. A broken assessment, framework, or private-to-public mapping
+makes the unit fail and invokes the configured alert service.
