@@ -428,7 +428,10 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
       count(*) FILTER (
         WHERE stage = 'failed' AND next_attempt_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       ) AS scheduled_retry,
-      count(*) FILTER (WHERE stage = 'manual_review' AND source_type = 'pdf') AS awaiting_pdf_ocr,
+      count(*) FILTER (
+        WHERE stage = 'manual_review' AND source_type = 'pdf'
+          AND source_status <> 'rejected' AND (parent_id IS NULL OR item_kind = 'issue')
+      ) AS awaiting_pdf_ocr,
       count(*) FILTER (WHERE stage IN ('needs_review', 'source_verified', 'lifecycle_verified')) AS awaiting_verification,
       count(*) FILTER (WHERE stage = 'indexed') AS indexed_containers,
       count(*) FILTER (WHERE stage = 'ready') AS ready_for_release,
@@ -463,6 +466,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
       count(*) FILTER (
         WHERE item_kind = 'document'
           AND stage NOT IN ('discovered', 'failed')
+          AND source_status <> 'rejected' AND metadata_status <> 'rejected'
           AND (trim(title) = '' OR trim(issuer) = '' OR published_at IS NULL)
       ) AS documents_missing_metadata,
       count(*) FILTER (

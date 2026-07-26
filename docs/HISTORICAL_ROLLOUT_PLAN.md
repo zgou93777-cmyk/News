@@ -8,8 +8,8 @@ that push. Historical rows remain private until every later release gate passes.
 | Step | Acceptance scope | Status |
 | --- | --- | --- |
 | 1 | Queue, state machine, server load, and checkpoint recovery audit | Complete |
-| 2 | PDF cache, Chinese OCR, article segmentation, and failure retry | In progress |
-| 3 | Issuer, document number, publication/effective/repeal dates, and replacement relations | Pending |
+| 2 | PDF cache, Chinese OCR, article segmentation, and failure retry | Complete |
+| 3 | Issuer, document number, publication/effective/repeal dates, and replacement relations | In progress |
 | 4 | Implementation, paid funding, outcome evidence, and complete-corpus `not_found` | Pending |
 | 5 | Four statuses, confidence threshold, quote retention, and automatic release guards | Pending |
 | 6 | First 100-row regression, load test, and production deployment | Pending |

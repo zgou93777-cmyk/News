@@ -83,3 +83,22 @@ provenance, prefers embedded text, uses Chinese OCR only when required, splits a
 issue into deterministic document candidates, and resumes after every durable
 stage. It may create private document candidates but may not mark them `ready` or
 publish them. The verification workers remain responsible for every release field.
+
+## PDF/OCR production acceptance on 2026-07-26
+
+The production recovery drill completed two 48-page scanned issues from cached
+source bytes and page checkpoints. The v2 segmenter rejected both issues because
+their OCR headings failed title-structure and boundary-quality gates. No candidate
+from either issue was accepted.
+
+Two private candidates previously created by the v1 segmenter were found during the
+deployment audit. The migration path requeued their parent issue, reran v2 against
+the cached OCR, and quarantined both children as `manual_review` with rejected source,
+metadata, lifecycle, implementation, outcome, and analysis states. The rejected
+children are excluded from actionable OCR and missing-metadata audit counts.
+
+After remediation, production had no `needs_review`, `indexed`, `ready`, or
+`published` historical rows. SQLite integrity, foreign keys, release mappings,
+internal and public health endpoints, OCR dependencies, the API service, and both
+timers passed. Repository attributes now force LF text in release archives so
+Windows packaging cannot produce invalid Linux shebangs.

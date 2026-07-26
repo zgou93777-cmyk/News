@@ -321,3 +321,35 @@ test('historical audit exposes recoverable work, blocked stages and integrity ri
     db.close();
   }
 });
+
+test('historical audit excludes rejected PDF children from actionable backlog and metadata gaps', () => {
+  const db = openDatabase(':memory:');
+  try {
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/shuju/1954/parent.pdf',
+      sourceName: 'Official archive', sourceType: 'pdf', itemKind: 'issue', sourceYear: 1954
+    });
+    const parentId = db.prepare('SELECT last_insert_rowid() AS id').get().id;
+    db.prepare("UPDATE historical_backfill_items SET stage = 'manual_review' WHERE id = ?").run(parentId);
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/shuju/1954/parent.pdf#candidate=rejected',
+      sourceName: 'Official archive', sourceType: 'pdf', itemKind: 'document', sourceYear: 1954,
+      title: 'Rejected OCR candidate'
+    });
+    const childId = db.prepare('SELECT last_insert_rowid() AS id').get().id;
+    db.prepare(`
+      UPDATE historical_backfill_items SET
+        parent_id = ?, stage = 'manual_review', source_status = 'rejected', metadata_status = 'rejected'
+      WHERE id = ?
+    `).run(parentId, childId);
+
+    const audit = historicalQueueAudit(db, {}, {
+      loadSnapshot: () => ({ cpuCount: 2, load1: 0, normalizedLoad: 0, freeMemoryRatio: 0.5 })
+    });
+    assert.equal(audit.total, 2);
+    assert.equal(audit.recovery.awaitingPdfOcr, 1);
+    assert.equal(audit.integrity.documentsMissingMetadata, 0);
+  } finally {
+    db.close();
+  }
+});
