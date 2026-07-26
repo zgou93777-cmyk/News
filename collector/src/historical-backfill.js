@@ -493,9 +493,56 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
     LEFT JOIN historical_backfill_items parent ON parent.id = child.parent_id
     WHERE child.parent_id IS NOT NULL AND parent.id IS NULL
   `).get().count;
+  const releaseIntegrity = db.prepare(`
+    SELECT
+      count(*) FILTER (
+        WHERE item.stage = 'ready' AND EXISTS (
+          SELECT 1 FROM historical_evidence_searches search
+          WHERE search.item_id = item.id
+            AND search.corpus_watermark < (SELECT coalesce(max(id), 0) FROM historical_backfill_items)
+        )
+      ) AS stale_ready_assessments,
+      count(*) FILTER (
+        WHERE item.stage IN ('ready', 'published') AND NOT EXISTS (
+          SELECT 1 FROM historical_analysis_versions assessment
+          WHERE assessment.id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
+            AND assessment.item_id = item.id AND assessment.release_eligible = 1
+            AND json_array_length(assessment.gates_json) > 0
+            AND NOT EXISTS (
+              SELECT 1 FROM json_each(assessment.gates_json) gate
+              WHERE json_extract(gate.value, '$.passed') IS NOT 1
+            )
+        )
+      ) AS assessment_link_violations,
+      count(*) FILTER (
+        WHERE item.stage = 'published' AND NOT EXISTS (
+          SELECT 1 FROM historical_public_releases release
+          WHERE release.item_id = item.id AND release.document_id = item.document_id
+            AND release.assessment_version_id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
+        )
+      ) AS public_release_violations
+    FROM historical_backfill_items item
+  `).get();
+  const publicDocumentMismatches = db.prepare(`
+    SELECT count(*) AS count
+    FROM historical_public_releases release
+    JOIN historical_backfill_items item ON item.id = release.item_id
+    JOIN documents document ON document.id = release.document_id
+    WHERE document.original_url <> item.source_url OR document.title <> item.title
+      OR document.issuer <> item.issuer OR document.document_number <> item.document_number
+      OR document.published_at <> item.published_at OR document.content_text <> item.content_text
+      OR document.checksum <> item.checksum
+  `).get().count;
+
+  const criticalIntegrityFailures = Number(integrity.release_guard_violations)
+    + Number(integrity.document_link_violations)
+    + Number(orphanedParents)
+    + Number(releaseIntegrity.assessment_link_violations)
+    + Number(releaseIntegrity.public_release_violations)
+    + Number(publicDocumentMismatches);
 
   return {
-    status: 'succeeded',
+    status: criticalIntegrityFailures ? 'failed' : 'succeeded',
     generatedAt: new Date().toISOString(),
     total,
     byStage,
@@ -524,7 +571,12 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
       documentsMissingMetadata: Number(integrity.documents_missing_metadata),
       releaseGuardViolations: Number(integrity.release_guard_violations),
       documentLinkViolations: Number(integrity.document_link_violations),
-      orphanedParents: Number(orphanedParents)
+      orphanedParents: Number(orphanedParents),
+      staleReadyAssessments: Number(releaseIntegrity.stale_ready_assessments),
+      assessmentLinkViolations: Number(releaseIntegrity.assessment_link_violations),
+      publicReleaseViolations: Number(releaseIntegrity.public_release_violations),
+      publicDocumentMismatches: Number(publicDocumentMismatches),
+      criticalFailures: criticalIntegrityFailures
     },
     capacity: {
       minimum,

@@ -42,6 +42,8 @@ test('health and categories expose database state', async () => {
   assert.equal(health.status, 'ok');
   assert.equal(health.schemaVersion, '8');
   assert.equal(health.pushEnabled, true);
+  assert.deepEqual(health.historical.byStage, {});
+  assert.equal(health.historical.integrityOk, true);
 
   const categories = await (await fetch(`${origin}/api/categories`)).json();
   assert.deepEqual(categories.data.map((item) => item.name), ['消费与内需']);

@@ -290,6 +290,29 @@ async function routeApi(req, res, url, context) {
       SELECT status, started_at, completed_at FROM sync_runs
       ORDER BY id DESC LIMIT 1
     `).get() || null;
+    const historicalRows = db.prepare(`
+      SELECT stage, count(*) AS count
+      FROM historical_backfill_items GROUP BY stage ORDER BY stage
+    `).all();
+    const historicalIntegrity = db.prepare(`
+      SELECT
+        count(*) FILTER (WHERE item.stage = 'ready') AS ready,
+        count(*) FILTER (WHERE item.stage = 'published') AS published,
+        count(*) FILTER (
+          WHERE item.stage IN ('ready', 'published') AND NOT EXISTS (
+            SELECT 1 FROM historical_analysis_versions assessment
+            WHERE assessment.id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
+              AND assessment.item_id = item.id AND assessment.release_eligible = 1
+          )
+        ) AS assessment_violations,
+        count(*) FILTER (
+          WHERE item.stage = 'published' AND NOT EXISTS (
+            SELECT 1 FROM historical_public_releases release
+            WHERE release.item_id = item.id AND release.document_id = item.document_id
+          )
+        ) AS release_violations
+      FROM historical_backfill_items item
+    `).get();
     sendJson(res, 200, {
       status: 'ok',
       database: 'ok',
@@ -300,6 +323,13 @@ async function routeApi(req, res, url, context) {
         startedAt: latestSync.started_at,
         completedAt: latestSync.completed_at
       } : null,
+      historical: {
+        byStage: Object.fromEntries(historicalRows.map((row) => [row.stage, Number(row.count)])),
+        ready: Number(historicalIntegrity.ready),
+        published: Number(historicalIntegrity.published),
+        integrityOk: Number(historicalIntegrity.assessment_violations) === 0
+          && Number(historicalIntegrity.release_violations) === 0
+      },
       uptimeSeconds: Math.floor(process.uptime()),
       timestamp: new Date().toISOString()
     });

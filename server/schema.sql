@@ -466,6 +466,11 @@ BEGIN
   SELECT RAISE(ABORT, 'historical public releases cannot be deleted');
 END;
 
+-- These guards predate schema version 8. Recreate them so upgrades replace the
+-- weaker definitions already stored in production SQLite databases.
+DROP TRIGGER IF EXISTS historical_backfill_ready_insert_guard;
+DROP TRIGGER IF EXISTS historical_backfill_ready_update_guard;
+
 CREATE TRIGGER IF NOT EXISTS historical_backfill_ready_insert_guard
 BEFORE INSERT ON historical_backfill_items
 WHEN NEW.stage IN ('ready', 'published')

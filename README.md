@@ -62,4 +62,12 @@ systemctl status policy-monitor-collector.timer --no-pager
 journalctl -u policy-monitor.service -u policy-monitor-collector.service --since today
 ```
 
+完整的备份、迁移、OCR 依赖检查、systemd 安装和失败恢复步骤见
+`docs/PRODUCTION_RUNBOOK.md`。生产校验命令：
+
+```bash
+node deploy/verify-production.js \
+  --db-path /var/lib/policy-monitor/policy-monitor.db --check-ocr
+```
+
 `.env`、SQLite 数据库、日志、`node_modules` 和通知密钥不进入源码包。生产数据库需要单独备份。

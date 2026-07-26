@@ -309,7 +309,12 @@ test('historical audit exposes recoverable work, blocked stages and integrity ri
       documentsMissingMetadata: 1,
       releaseGuardViolations: 0,
       documentLinkViolations: 0,
-      orphanedParents: 0
+      orphanedParents: 0,
+      staleReadyAssessments: 0,
+      assessmentLinkViolations: 0,
+      publicReleaseViolations: 0,
+      publicDocumentMismatches: 0,
+      criticalFailures: 0
     });
     assert.equal(audit.capacity.recommended, 50);
   } finally {

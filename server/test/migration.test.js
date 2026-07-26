@@ -1,0 +1,86 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const test = require('node:test');
+const { DatabaseSync } = require('node:sqlite');
+
+const { getSchemaVersion, openDatabase } = require('../src/db');
+
+test('schema 3 databases gain new tables and replace legacy release guards', () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-monitor-migration-'));
+  const filename = path.join(directory, 'migration.db');
+  try {
+    openDatabase(filename).close();
+    const legacy = new DatabaseSync(filename, { enableForeignKeyConstraints: false });
+    try {
+      legacy.exec(`
+        PRAGMA foreign_keys = OFF;
+        DROP TRIGGER IF EXISTS historical_backfill_ready_insert_guard;
+        DROP TRIGGER IF EXISTS historical_backfill_ready_update_guard;
+        DROP TRIGGER IF EXISTS historical_public_release_insert_guard;
+        DROP TRIGGER IF EXISTS historical_public_releases_immutable_update;
+        DROP TRIGGER IF EXISTS historical_public_releases_immutable_delete;
+        DROP TRIGGER IF EXISTS historical_analysis_versions_immutable_update;
+        DROP TRIGGER IF EXISTS historical_analysis_versions_immutable_delete;
+        DROP TABLE historical_public_releases;
+        DROP TABLE historical_analysis_versions;
+        DROP TABLE historical_evidence_searches;
+        DROP TABLE historical_policy_evidence;
+        DROP TABLE historical_policy_relations;
+        DROP TABLE historical_verification_evidence;
+        DROP TABLE historical_artifacts;
+        DROP TABLE historical_source_scans;
+        UPDATE schema_meta SET value = '3' WHERE key = 'schema_version';
+        CREATE TRIGGER historical_backfill_ready_update_guard
+        BEFORE UPDATE ON historical_backfill_items
+        WHEN NEW.stage IN ('ready', 'published')
+        BEGIN
+          SELECT CASE WHEN trim(NEW.title) = ''
+            THEN RAISE(ABORT, 'legacy guard') END;
+        END;
+      `);
+    } finally {
+      legacy.close();
+    }
+
+    const upgraded = openDatabase(filename);
+    try {
+      assert.equal(getSchemaVersion(upgraded), '8');
+      const tables = new Set(upgraded.prepare(`
+        SELECT name FROM sqlite_schema WHERE type = 'table'
+      `).all().map((row) => row.name));
+      for (const name of [
+        'historical_artifacts',
+        'historical_verification_evidence',
+        'historical_policy_evidence',
+        'historical_analysis_versions',
+        'historical_public_releases'
+      ]) assert.ok(tables.has(name), `missing upgraded table ${name}`);
+      const guard = upgraded.prepare(`
+        SELECT sql FROM sqlite_schema
+        WHERE type = 'trigger' AND name = 'historical_backfill_ready_update_guard'
+      `).get().sql;
+      assert.match(guard, /assessmentVersionId/);
+      assert.doesNotMatch(guard, /legacy guard/);
+      const itemId = Number(upgraded.prepare(`
+        INSERT INTO historical_backfill_items (
+          source_url, source_name, item_kind, source_year, title, stage
+        ) VALUES ('https://www.gov.cn/gongbao/migration.htm', 'Official Gazette',
+          'document', 1954, 'legacy title', 'needs_review')
+      `).run().lastInsertRowid);
+      assert.throws(
+        () => upgraded.prepare(`
+          UPDATE historical_backfill_items SET stage = 'ready' WHERE id = ?
+        `).run(itemId),
+        /not fully verified/
+      );
+    } finally {
+      upgraded.close();
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
