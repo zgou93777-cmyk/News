@@ -21,7 +21,9 @@ const REQUIRED_TABLES = [
   'historical_artifacts',
   'historical_source_scans',
   'historical_verification_evidence',
-  'historical_policy_relations'
+  'historical_policy_relations',
+  'historical_policy_evidence',
+  'historical_evidence_searches'
 ];
 
 test('historical backfill records are private and verification-gated', () => {

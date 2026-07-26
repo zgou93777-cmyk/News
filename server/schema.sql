@@ -334,6 +334,46 @@ CREATE TABLE IF NOT EXISTS historical_policy_relations (
 CREATE INDEX IF NOT EXISTS idx_historical_relations_predecessor
 ON historical_policy_relations(predecessor_item_id, relation_type, status);
 
+CREATE TABLE IF NOT EXISTS historical_policy_evidence (
+  id INTEGER PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
+  source_item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
+  evidence_type TEXT NOT NULL CHECK (evidence_type IN (
+    'implementation', 'funding', 'outcome', 'meeting_signal', 'policy_release'
+  )),
+  classification TEXT NOT NULL CHECK (classification IN ('accepted', 'excluded')),
+  title TEXT NOT NULL,
+  source_url TEXT NOT NULL,
+  evidence_quote TEXT NOT NULL,
+  observed_at TEXT,
+  details_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(details_json)),
+  extractor TEXT NOT NULL,
+  confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  CHECK (trim(title) <> '' AND trim(source_url) <> '' AND trim(evidence_quote) <> '' AND trim(extractor) <> ''),
+  CHECK (item_id <> source_item_id),
+  UNIQUE(item_id, source_item_id, evidence_type, evidence_quote)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_policy_evidence_item
+ON historical_policy_evidence(item_id, classification, evidence_type, observed_at);
+
+CREATE TABLE IF NOT EXISTS historical_evidence_searches (
+  id INTEGER PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
+  evidence_scope TEXT NOT NULL CHECK (evidence_scope IN ('implementation', 'outcome')),
+  status TEXT NOT NULL CHECK (status IN ('incomplete', 'complete')),
+  corpus_watermark INTEGER NOT NULL DEFAULT 0 CHECK (corpus_watermark >= 0),
+  candidates_checked INTEGER NOT NULL DEFAULT 0 CHECK (candidates_checked >= 0),
+  accepted_matches INTEGER NOT NULL DEFAULT 0 CHECK (accepted_matches >= 0),
+  search_scope TEXT NOT NULL,
+  searched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE(item_id, evidence_scope)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_evidence_search_status
+ON historical_evidence_searches(status, evidence_scope, searched_at);
+
 CREATE TRIGGER IF NOT EXISTS historical_backfill_ready_insert_guard
 BEFORE INSERT ON historical_backfill_items
 WHEN NEW.stage IN ('ready', 'published')
@@ -379,5 +419,5 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '5')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '6')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

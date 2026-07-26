@@ -61,6 +61,9 @@ node src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-ite
 # 核验机关、文号、发布日期、施行日期以及后续官方废止/替代关系
 node src/cli.js --historical-verify --adaptive-load --min-items 5 --max-items 100
 
+# 在后续官方材料中检索实际实施、已拨付资金和结果数据
+node src/cli.js --historical-evidence --adaptive-load --min-items 5 --max-items 100
+
 # 查看私有队列，不影响首页或公开 API
 node src/cli.js --historical-status
 
