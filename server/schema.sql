@@ -118,6 +118,31 @@ BEGIN
   SELECT RAISE(ABORT, 'analysis versions are immutable; deletion is not allowed');
 END;
 
+CREATE TABLE IF NOT EXISTS analysis_frameworks (
+  analysis_version_id INTEGER PRIMARY KEY REFERENCES analysis_versions(id) ON DELETE RESTRICT,
+  framework_json TEXT NOT NULL CHECK (
+    json_valid(framework_json)
+    AND json_type(framework_json) = 'object'
+    AND json_type(framework_json, '$.ready') IN ('true', 'false')
+    AND trim(coalesce(json_extract(framework_json, '$.perspective'), '')) <> ''
+    AND trim(coalesce(json_extract(framework_json, '$.bottomLine'), '')) <> ''
+  ),
+  method TEXT NOT NULL CHECK (trim(method) <> ''),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE TRIGGER IF NOT EXISTS analysis_frameworks_immutable_update
+BEFORE UPDATE ON analysis_frameworks
+BEGIN
+  SELECT RAISE(ABORT, 'analysis frameworks are immutable; insert a new analysis version');
+END;
+
+CREATE TRIGGER IF NOT EXISTS analysis_frameworks_immutable_delete
+BEFORE DELETE ON analysis_frameworks
+BEGIN
+  SELECT RAISE(ABORT, 'analysis frameworks are immutable; deletion is not allowed');
+END;
+
 CREATE TABLE IF NOT EXISTS forecasts (
   id INTEGER PRIMARY KEY,
   analysis_version_id INTEGER NOT NULL REFERENCES analysis_versions(id),
@@ -1033,5 +1058,5 @@ SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at)
 WHERE next_attempt_at GLOB '????-??-?? ??:??:??*'
   AND strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at) IS NOT NULL;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '14')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '15')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;
