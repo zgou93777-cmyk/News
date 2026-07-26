@@ -28,6 +28,7 @@ const REQUIRED_TABLES = [
   'historical_policy_evidence',
   'historical_evidence_searches',
   'historical_analysis_versions',
+  'historical_analysis_frameworks',
   'historical_review_submissions',
   'historical_release_cohorts',
   'historical_release_cohort_items',
