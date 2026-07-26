@@ -6,8 +6,9 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const EXPECTED_SCHEMA = '14';
+const EXPECTED_SCHEMA = '15';
 const REQUIRED_TABLES = [
+  'analysis_frameworks',
   'historical_backfill_items',
   'historical_artifacts',
   'historical_segmentation_submissions',
