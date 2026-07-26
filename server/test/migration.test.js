@@ -48,7 +48,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
 
     const upgraded = openDatabase(filename);
     try {
-      assert.equal(getSchemaVersion(upgraded), '8');
+      assert.equal(getSchemaVersion(upgraded), '9');
       const tables = new Set(upgraded.prepare(`
         SELECT name FROM sqlite_schema WHERE type = 'table'
       `).all().map((row) => row.name));
@@ -65,6 +65,13 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
       `).get().sql;
       assert.match(guard, /assessmentVersionId/);
       assert.doesNotMatch(guard, /legacy guard/);
+      const releaseGuard = upgraded.prepare(`
+        SELECT sql FROM sqlite_schema
+        WHERE type = 'trigger' AND name = 'historical_public_release_insert_guard'
+      `).get().sql;
+      assert.match(releaseGuard, /historical-evidence-gates-v2/);
+      assert.match(releaseGuard, /policy_signals/);
+      assert.doesNotMatch(releaseGuard, /historical-evidence-gates-v1/);
       const itemId = Number(upgraded.prepare(`
         INSERT INTO historical_backfill_items (
           source_url, source_name, item_kind, source_year, title, stage

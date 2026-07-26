@@ -420,6 +420,10 @@ CREATE TABLE IF NOT EXISTS historical_public_releases (
 CREATE INDEX IF NOT EXISTS idx_historical_public_releases_document
 ON historical_public_releases(document_id, id DESC);
 
+-- Recreate the release guard on every migration so existing databases receive
+-- the current confidence, citation, and immutable-assessment checks.
+DROP TRIGGER IF EXISTS historical_public_release_insert_guard;
+
 CREATE TRIGGER IF NOT EXISTS historical_public_release_insert_guard
 BEFORE INSERT ON historical_public_releases
 BEGIN
@@ -433,13 +437,31 @@ BEGIN
       AND analysis.document_id = document.id AND analysis.status = 'published'
     WHERE item.id = NEW.item_id
       AND item.stage = 'ready' AND item.analysis_status = 'verified'
+      AND (item.source_url LIKE 'https://gov.cn/%' OR item.source_url GLOB 'https://*.gov.cn/*')
       AND assessment.release_eligible = 1 AND assessment.confidence >= 0.95
-      AND assessment.methodology IN ('historical-evidence-gates-v1', 'human-review-v1')
+      AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
       AND json_array_length(assessment.gates_json) > 0
       AND NOT EXISTS (
         SELECT 1 FROM json_each(assessment.gates_json) gate
         WHERE json_extract(gate.value, '$.passed') IS NOT 1
       )
+      AND CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER) = assessment.id
+      AND CAST(json_extract(item.analysis_json, '$.assessmentVersion') AS INTEGER) = assessment.version
+      AND json_extract(item.analysis_json, '$.reviewStatus') = assessment.review_status
+      AND CAST(json_extract(item.analysis_json, '$.confidence') AS REAL) = assessment.confidence
+      AND json_extract(item.analysis_json, '$.methodology') = assessment.methodology
+      AND json_extract(item.analysis_json, '$.summary') = json_extract(assessment.analysis_json, '$.summary')
+      AND json_extract(item.analysis_json, '$.cycleAssessment') = json_extract(assessment.analysis_json, '$.cycleAssessment')
+      AND json_extract(item.analysis_json, '$.implementationAssessment') = json_extract(assessment.analysis_json, '$.implementationAssessment')
+      AND json_extract(item.analysis_json, '$.outcomeAssessment') = json_extract(assessment.analysis_json, '$.outcomeAssessment')
+      AND coalesce(json_extract(item.analysis_json, '$.ambiguities'), '[]')
+        = coalesce(json_extract(assessment.analysis_json, '$.ambiguities'), '[]')
+      AND coalesce(json_extract(item.analysis_json, '$.citations'), '[]')
+        = coalesce(json_extract(assessment.analysis_json, '$.citations'), '[]')
+      AND coalesce(json_extract(item.analysis_json, '$.evidenceQuotes'), '[]')
+        = coalesce(json_extract(assessment.analysis_json, '$.evidenceQuotes'), '[]')
+      AND json_extract(item.analysis_json, '$.gates') = assessment.gates_json
+      AND json_extract(assessment.analysis_json, '$.gates') = assessment.gates_json
       AND document.status <> 'draft'
       AND document.original_url = item.source_url
       AND document.title = item.title
@@ -450,7 +472,53 @@ BEGIN
       AND coalesce(document.effective_at, '') = coalesce(item.effective_at, '')
       AND document.content_text = item.content_text
       AND document.checksum = item.checksum
+      AND analysis.headline = item.title || '：' || json_extract(assessment.analysis_json, '$.summary')
+      AND analysis.interpretation = json_extract(assessment.analysis_json, '$.summary')
+        || CASE WHEN coalesce(json_extract(assessment.analysis_json, '$.cycleAssessment'), '') <> ''
+          THEN char(10) || char(10) || json_extract(assessment.analysis_json, '$.cycleAssessment') ELSE '' END
+      AND analysis.impact = coalesce(json_extract(assessment.analysis_json, '$.implementationAssessment'), '')
+        || CASE WHEN coalesce(json_extract(assessment.analysis_json, '$.outcomeAssessment'), '') <> ''
+          THEN char(10) || char(10) || json_extract(assessment.analysis_json, '$.outcomeAssessment') ELSE '' END
+      AND analysis.recommendations = CASE assessment.review_status
+        WHEN 'watching' THEN '继续检索后续官方实施、实际拨付和结果材料；没有新证据时不提高结论等级。'
+        WHEN 'partial' THEN '继续补齐尚未出现的实施或结果环节，并保持结果观察与政策因果判断分离。'
+        WHEN 'ambiguous' THEN '保留冲突口径，等待权威说明或人工复核，不选择性采信其中一项。'
+        ELSE '继续跟踪后续修订、废止和结果数据，不把已观察结果外推为单一政策因果。'
+      END
+      AND analysis.methodology = assessment.methodology
+      AND analysis.evidence_summary = json_extract(assessment.analysis_json, '$.summary')
       AND analysis.model_name = assessment.methodology
+      AND analysis.prompt_version = 'historical-release-v1'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM historical_policy_evidence evidence
+        LEFT JOIN historical_backfill_items source ON source.id = evidence.source_item_id
+        WHERE evidence.item_id = item.id AND evidence.classification = 'accepted'
+          AND (
+            source.id IS NULL OR source.source_status <> 'verified'
+            OR source.metadata_status <> 'verified'
+            OR source.source_url <> evidence.source_url
+            OR source.published_at <> evidence.observed_at
+            OR trim(source.checksum) = ''
+            OR instr(source.content_text, evidence.evidence_quote) = 0
+            OR trim(evidence.evidence_quote) = ''
+            OR evidence.confidence < 0.95
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM historical_policy_evidence evidence
+        WHERE evidence.item_id = item.id AND evidence.classification = 'accepted'
+          AND NOT EXISTS (
+            SELECT 1 FROM policy_signals signal
+            WHERE signal.document_id = document.id
+              AND signal.kind = evidence.evidence_type
+              AND signal.value_text = evidence.title
+              AND signal.evidence_quote = evidence.evidence_quote
+              AND signal.source_url = evidence.source_url
+              AND signal.observed_at = evidence.observed_at
+              AND signal.confidence = evidence.confidence
+          )
+      )
   ) THEN RAISE(ABORT, 'historical public release guard rejected the mapping') END;
 END;
 
@@ -483,6 +551,7 @@ BEGIN
     NEW.implementation_status NOT IN ('verified', 'not_found', 'not_applicable') OR
     NEW.outcome_status NOT IN ('verified', 'not_found', 'not_applicable') OR
     NEW.analysis_status <> 'verified' OR
+    NOT (NEW.source_url LIKE 'https://gov.cn/%' OR NEW.source_url GLOB 'https://*.gov.cn/*') OR
     trim(NEW.title) = '' OR trim(NEW.issuer) = '' OR NEW.published_at IS NULL OR
     trim(NEW.content_text) = '' OR trim(NEW.checksum) = '' OR
     json_array_length(NEW.evidence_urls_json) = 0 OR
@@ -491,7 +560,24 @@ BEGIN
       SELECT 1 FROM historical_analysis_versions assessment
       WHERE assessment.id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
         AND assessment.item_id = NEW.id AND assessment.release_eligible = 1
+        AND assessment.confidence >= 0.95
+        AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+        AND assessment.version = CAST(json_extract(NEW.analysis_json, '$.assessmentVersion') AS INTEGER)
         AND assessment.review_status = json_extract(NEW.analysis_json, '$.reviewStatus')
+        AND assessment.confidence = CAST(json_extract(NEW.analysis_json, '$.confidence') AS REAL)
+        AND assessment.methodology = json_extract(NEW.analysis_json, '$.methodology')
+        AND json_extract(NEW.analysis_json, '$.summary') = json_extract(assessment.analysis_json, '$.summary')
+        AND json_extract(NEW.analysis_json, '$.cycleAssessment') = json_extract(assessment.analysis_json, '$.cycleAssessment')
+        AND json_extract(NEW.analysis_json, '$.implementationAssessment') = json_extract(assessment.analysis_json, '$.implementationAssessment')
+        AND json_extract(NEW.analysis_json, '$.outcomeAssessment') = json_extract(assessment.analysis_json, '$.outcomeAssessment')
+        AND coalesce(json_extract(NEW.analysis_json, '$.ambiguities'), '[]')
+          = coalesce(json_extract(assessment.analysis_json, '$.ambiguities'), '[]')
+        AND coalesce(json_extract(NEW.analysis_json, '$.citations'), '[]')
+          = coalesce(json_extract(assessment.analysis_json, '$.citations'), '[]')
+        AND coalesce(json_extract(NEW.analysis_json, '$.evidenceQuotes'), '[]')
+          = coalesce(json_extract(assessment.analysis_json, '$.evidenceQuotes'), '[]')
+        AND json_extract(NEW.analysis_json, '$.gates') = assessment.gates_json
+        AND json_extract(assessment.analysis_json, '$.gates') = assessment.gates_json
         AND json_array_length(assessment.gates_json) > 0
         AND NOT EXISTS (
           SELECT 1 FROM json_each(assessment.gates_json) gate
@@ -520,6 +606,7 @@ BEGIN
     NEW.implementation_status NOT IN ('verified', 'not_found', 'not_applicable') OR
     NEW.outcome_status NOT IN ('verified', 'not_found', 'not_applicable') OR
     NEW.analysis_status <> 'verified' OR
+    NOT (NEW.source_url LIKE 'https://gov.cn/%' OR NEW.source_url GLOB 'https://*.gov.cn/*') OR
     trim(NEW.title) = '' OR trim(NEW.issuer) = '' OR NEW.published_at IS NULL OR
     trim(NEW.content_text) = '' OR trim(NEW.checksum) = '' OR
     json_array_length(NEW.evidence_urls_json) = 0 OR
@@ -528,7 +615,24 @@ BEGIN
       SELECT 1 FROM historical_analysis_versions assessment
       WHERE assessment.id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
         AND assessment.item_id = NEW.id AND assessment.release_eligible = 1
+        AND assessment.confidence >= 0.95
+        AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+        AND assessment.version = CAST(json_extract(NEW.analysis_json, '$.assessmentVersion') AS INTEGER)
         AND assessment.review_status = json_extract(NEW.analysis_json, '$.reviewStatus')
+        AND assessment.confidence = CAST(json_extract(NEW.analysis_json, '$.confidence') AS REAL)
+        AND assessment.methodology = json_extract(NEW.analysis_json, '$.methodology')
+        AND json_extract(NEW.analysis_json, '$.summary') = json_extract(assessment.analysis_json, '$.summary')
+        AND json_extract(NEW.analysis_json, '$.cycleAssessment') = json_extract(assessment.analysis_json, '$.cycleAssessment')
+        AND json_extract(NEW.analysis_json, '$.implementationAssessment') = json_extract(assessment.analysis_json, '$.implementationAssessment')
+        AND json_extract(NEW.analysis_json, '$.outcomeAssessment') = json_extract(assessment.analysis_json, '$.outcomeAssessment')
+        AND coalesce(json_extract(NEW.analysis_json, '$.ambiguities'), '[]')
+          = coalesce(json_extract(assessment.analysis_json, '$.ambiguities'), '[]')
+        AND coalesce(json_extract(NEW.analysis_json, '$.citations'), '[]')
+          = coalesce(json_extract(assessment.analysis_json, '$.citations'), '[]')
+        AND coalesce(json_extract(NEW.analysis_json, '$.evidenceQuotes'), '[]')
+          = coalesce(json_extract(assessment.analysis_json, '$.evidenceQuotes'), '[]')
+        AND json_extract(NEW.analysis_json, '$.gates') = assessment.gates_json
+        AND json_extract(assessment.analysis_json, '$.gates') = assessment.gates_json
         AND json_array_length(assessment.gates_json) > 0
         AND NOT EXISTS (
           SELECT 1 FROM json_each(assessment.gates_json) gate
@@ -550,5 +654,5 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '8')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '9')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

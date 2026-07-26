@@ -64,8 +64,9 @@ function createReadyItem(db, suffix = '21') {
     const sourceId = Number(db.prepare(`
       INSERT INTO historical_backfill_items (
         source_url, source_name, source_type, item_kind, source_year, title,
-        issuer, published_at, content_text, checksum, stage
-      ) VALUES (?, '国务院公报', 'html', 'document', 2001, ?, '国务院', ?, ?, ?, 'needs_review')
+        issuer, published_at, content_text, checksum, stage, source_status, metadata_status
+      ) VALUES (?, '国务院公报', 'html', 'document', 2001, ?, '国务院', ?, ?, ?,
+        'needs_review', 'verified', 'verified')
     `).run(
       `https://www.gov.cn/gongbao/2001/${type}-${suffix}.htm`, evidenceTitle,
       observedAt, evidenceContent, checksum(evidenceContent)
@@ -105,19 +106,19 @@ function createReadyItem(db, suffix = '21') {
     ambiguities: [],
     evidenceQuotes: ['正式政策原文。', '已完成并形成正式记录。'],
     gates,
-    methodology: 'historical-evidence-gates-v1'
+    methodology: 'historical-evidence-gates-v2'
   };
   const assessmentId = Number(db.prepare(`
     INSERT INTO historical_analysis_versions (
       item_id, version, input_checksum, review_status, confidence,
       release_eligible, gates_json, analysis_json, methodology
-    ) VALUES (?, 1, ?, 'verified', 0.99, 1, ?, ?, 'historical-evidence-gates-v1')
+    ) VALUES (?, 1, ?, 'verified', 0.99, 1, ?, ?, 'historical-evidence-gates-v2')
   `).run(itemId, fingerprint, JSON.stringify(gates), JSON.stringify(analysis)).lastInsertRowid);
   db.prepare(`
     UPDATE historical_backfill_items SET
       stage = 'ready', analysis_status = 'verified',
       analysis_json = ?, review_notes = 'release test verified review',
-      reviewed_by = 'historical-evidence-gates-v1',
+      reviewed_by = 'historical-evidence-gates-v2',
       reviewed_at = '2026-07-26T12:00:00+08:00'
     WHERE id = ?
   `).run(JSON.stringify({ ...analysis, assessmentVersionId: assessmentId, assessmentVersion: 1 }), itemId);
@@ -183,7 +184,7 @@ test('database rejects a forged public mapping before the item can be marked pub
         document_id, version, headline, interpretation, impact, recommendations,
         model_name, status
       ) VALUES (?, 1, 'forged', 'forged', 'forged', 'forged',
-        'historical-evidence-gates-v1', 'published')
+        'historical-evidence-gates-v2', 'published')
     `).run(documentId).lastInsertRowid);
     const assessmentId = db.prepare(`
       SELECT id FROM historical_analysis_versions WHERE item_id = ?
@@ -221,6 +222,71 @@ test('a corpus change after analysis requeues the item instead of publishing sta
     assert.equal(item.analysis_status, 'pending');
     assert.match(item.last_error, /stale/);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('rejecting an accepted evidence source after assessment requeues instead of publishing', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const itemId = createReadyItem(db, '24');
+    const sourceId = db.prepare(`
+      SELECT source_item_id FROM historical_policy_evidence
+      WHERE item_id = ? AND evidence_type = 'implementation'
+    `).get(itemId).source_item_id;
+    db.prepare("UPDATE historical_backfill_items SET source_status = 'rejected' WHERE id = ?").run(sourceId);
+    const result = await runHistoricalReleaseQueue(db, { maxItems: 1 }, {
+      loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
+    });
+    assert.equal(result.published, 0);
+    assert.equal(result.requeued, 1);
+    assert.equal(result.status, 'succeeded');
+    assert.match(result.items[0].message, /stale/);
+    const item = db.prepare('SELECT stage, analysis_status FROM historical_backfill_items WHERE id = ?').get(itemId);
+    assert.equal(item.stage, 'lifecycle_verified');
+    assert.equal(item.analysis_status, 'pending');
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('database ready guard rejects analysis text that differs from the immutable assessment', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const itemId = createReadyItem(db, '25');
+    const item = db.prepare('SELECT analysis_json FROM historical_backfill_items WHERE id = ?').get(itemId);
+    const analysis = JSON.parse(item.analysis_json);
+    analysis.summary = '未经评估版本批准的替换结论。';
+    assert.throws(
+      () => db.prepare('UPDATE historical_backfill_items SET analysis_json = ? WHERE id = ?')
+        .run(JSON.stringify(analysis), itemId),
+      /not fully verified/
+    );
+    assert.throws(
+      () => db.prepare("UPDATE historical_backfill_items SET source_url = 'https://example.com/policy' WHERE id = ?")
+        .run(itemId),
+      /not fully verified/
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('target source content changed after assessment is requeued before release', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const itemId = createReadyItem(db, '26');
+    db.prepare("UPDATE historical_backfill_items SET content_text = content_text || '异常改动' WHERE id = ?")
+      .run(itemId);
+    const result = await runHistoricalReleaseQueue(db, { maxItems: 1 }, {
+      loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
+    });
+    assert.equal(result.published, 0);
+    assert.equal(result.requeued, 1);
+    assert.match(result.items[0].message, /checksum/);
+    assert.equal(db.prepare('SELECT stage FROM historical_backfill_items WHERE id = ?').get(itemId).stage, 'lifecycle_verified');
   } finally {
     db.close();
   }

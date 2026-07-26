@@ -500,17 +500,56 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
   const releaseIntegrity = db.prepare(`
     SELECT
       count(*) FILTER (
-        WHERE item.stage = 'ready' AND EXISTS (
-          SELECT 1 FROM historical_evidence_searches search
-          WHERE search.item_id = item.id
-            AND search.corpus_watermark < (SELECT coalesce(max(id), 0) FROM historical_backfill_items)
+        WHERE item.stage = 'ready' AND (
+          EXISTS (
+            SELECT 1 FROM historical_evidence_searches search
+            WHERE search.item_id = item.id
+              AND search.corpus_watermark < (SELECT coalesce(max(id), 0) FROM historical_backfill_items)
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM historical_policy_evidence evidence
+            LEFT JOIN historical_backfill_items source ON source.id = evidence.source_item_id
+            WHERE evidence.item_id = item.id AND evidence.classification = 'accepted'
+              AND (
+                source.id IS NULL OR source.source_status <> 'verified'
+                OR source.metadata_status <> 'verified'
+                OR source.source_url <> evidence.source_url
+                OR source.published_at <> evidence.observed_at
+                OR trim(source.checksum) = ''
+                OR instr(source.content_text, evidence.evidence_quote) = 0
+              )
+          )
         )
       ) AS stale_ready_assessments,
+      count(*) FILTER (
+        WHERE item.stage IN ('ready', 'published') AND EXISTS (
+          SELECT 1
+          FROM historical_policy_evidence evidence
+          LEFT JOIN historical_backfill_items source ON source.id = evidence.source_item_id
+          WHERE evidence.item_id = item.id AND evidence.classification = 'accepted'
+            AND (
+              source.id IS NULL OR source.source_status <> 'verified'
+              OR source.metadata_status <> 'verified'
+              OR source.source_url <> evidence.source_url
+              OR source.published_at <> evidence.observed_at
+              OR trim(source.checksum) = ''
+              OR instr(source.content_text, evidence.evidence_quote) = 0
+            )
+        )
+      ) AS evidence_source_violations,
       count(*) FILTER (
         WHERE item.stage IN ('ready', 'published') AND NOT EXISTS (
           SELECT 1 FROM historical_analysis_versions assessment
           WHERE assessment.id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
             AND assessment.item_id = item.id AND assessment.release_eligible = 1
+            AND assessment.confidence >= 0.95
+            AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+            AND assessment.version = CAST(json_extract(item.analysis_json, '$.assessmentVersion') AS INTEGER)
+            AND assessment.review_status = json_extract(item.analysis_json, '$.reviewStatus')
+            AND assessment.confidence = CAST(json_extract(item.analysis_json, '$.confidence') AS REAL)
+            AND assessment.methodology = json_extract(item.analysis_json, '$.methodology')
+            AND json_extract(item.analysis_json, '$.gates') = assessment.gates_json
             AND json_array_length(assessment.gates_json) > 0
             AND NOT EXISTS (
               SELECT 1 FROM json_each(assessment.gates_json) gate
@@ -541,6 +580,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
   const criticalIntegrityFailures = Number(integrity.release_guard_violations)
     + Number(integrity.document_link_violations)
     + Number(orphanedParents)
+    + Number(releaseIntegrity.evidence_source_violations)
     + Number(releaseIntegrity.assessment_link_violations)
     + Number(releaseIntegrity.public_release_violations)
     + Number(publicDocumentMismatches);
@@ -577,6 +617,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
       documentLinkViolations: Number(integrity.document_link_violations),
       orphanedParents: Number(orphanedParents),
       staleReadyAssessments: Number(releaseIntegrity.stale_ready_assessments),
+      evidenceSourceViolations: Number(releaseIntegrity.evidence_source_violations),
       assessmentLinkViolations: Number(releaseIntegrity.assessment_link_violations),
       publicReleaseViolations: Number(releaseIntegrity.public_release_violations),
       publicDocumentMismatches: Number(publicDocumentMismatches),

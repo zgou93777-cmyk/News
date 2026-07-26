@@ -68,14 +68,16 @@ function insertTarget(db, suffix, statuses = {}) {
 }
 
 function insertSourceItem(db, suffix, title, publishedAt) {
+  const content = `${title} 已完成 正文`;
   return Number(db.prepare(`
     INSERT INTO historical_backfill_items (
       source_url, source_name, source_type, item_kind, source_year, title, issuer,
-      published_at, content_text, checksum, stage
-    ) VALUES (?, 'Official Gazette', 'html', 'document', 2001, ?, '国务院', ?, ?, ?, 'needs_review')
+      published_at, content_text, checksum, stage, source_status, metadata_status
+    ) VALUES (?, 'Official Gazette', 'html', 'document', 2001, ?, '国务院', ?, ?, ?,
+      'needs_review', 'verified', 'verified')
   `).run(
     `https://www.gov.cn/gongbao/2001/evidence-${suffix}.htm`, title, publishedAt,
-    `${title} 正文`, checksum(`${title} 正文`)
+    content, checksum(content)
   ).lastInsertRowid);
 }
 
@@ -132,6 +134,9 @@ test('complete high-confidence evidence creates an immutable private ready asses
     const analysis = JSON.parse(item.analysis_json);
     assert.equal(analysis.reviewStatus, 'verified');
     assert.ok(analysis.gates.every((entry) => entry.passed));
+    assert.equal(analysis.citations.length, 8);
+    assert.equal(analysis.searchScopes.length, 2);
+    assert.ok(analysis.citations.every((entry) => entry.quote && entry.sourceUrl));
     assert.match(analysis.summary, /不等于已经证明/);
     const version = db.prepare('SELECT * FROM historical_analysis_versions WHERE item_id = ?').get(targetId);
     assert.equal(version.version, 1);
@@ -141,6 +146,87 @@ test('complete high-confidence evidence creates an immutable private ready asses
       /immutable/
     );
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('runtime options cannot lower the confidence floor below 0.95', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const targetId = insertTarget(db, '14');
+    const implementationId = insertSourceItem(db, 'low-confidence', '历史政策实施细则', '2001-03-01T00:00:00+08:00');
+    const outcomeId = insertSourceItem(db, 'high-confidence', '历史政策执行情况报告', '2002-06-01T00:00:00+08:00');
+    insertPolicyEvidence(db, targetId, implementationId, 'implementation', 0.94);
+    insertPolicyEvidence(db, targetId, outcomeId, 'outcome', 0.99);
+    const watermark = Number(db.prepare('SELECT max(id) AS id FROM historical_backfill_items').get().id);
+    insertSearches(db, targetId, watermark, { implementation: 'verified', outcome: 'verified' });
+    const item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(targetId);
+    const assessment = assessHistoricalPolicy(db, item, { minimumConfidence: 0.1 });
+    assert.equal(assessment.confidence, 0.94);
+    assert.equal(assessment.releaseEligible, false);
+    assert.ok(assessment.failedGates.includes('implementation_evidence'));
+    assert.ok(assessment.failedGates.includes('minimum_confidence'));
+    assert.equal(db.prepare('SELECT stage FROM historical_backfill_items WHERE id = ?').get(targetId).stage, 'lifecycle_verified');
+  } finally {
+    db.close();
+  }
+});
+
+test('accepted evidence counts must match the completed search record', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const targetId = insertTarget(db, '15');
+    const implementationId = insertSourceItem(db, 'count-implementation', '历史政策实施细则', '2001-03-01T00:00:00+08:00');
+    const outcomeId = insertSourceItem(db, 'count-outcome', '历史政策执行情况报告', '2002-06-01T00:00:00+08:00');
+    insertPolicyEvidence(db, targetId, implementationId, 'implementation');
+    insertPolicyEvidence(db, targetId, outcomeId, 'outcome');
+    const watermark = Number(db.prepare('SELECT max(id) AS id FROM historical_backfill_items').get().id);
+    insertSearches(db, targetId, watermark, { implementation: 'verified', outcome: 'verified' });
+    db.prepare(`
+      UPDATE historical_evidence_searches SET accepted_matches = 2
+      WHERE item_id = ? AND evidence_scope = 'implementation'
+    `).run(targetId);
+    const item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(targetId);
+    const assessment = assessHistoricalPolicy(db, item);
+    assert.equal(assessment.releaseEligible, false);
+    assert.ok(assessment.failedGates.includes('implementation_evidence'));
+  } finally {
+    db.close();
+  }
+});
+
+test('accepted evidence is blocked when its verified source checksum no longer matches', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const targetId = insertTarget(db, '17');
+    const implementationId = insertSourceItem(db, 'checksum-implementation', '历史政策实施细则', '2001-03-01T00:00:00+08:00');
+    const outcomeId = insertSourceItem(db, 'checksum-outcome', '历史政策执行情况报告', '2002-06-01T00:00:00+08:00');
+    insertPolicyEvidence(db, targetId, implementationId, 'implementation');
+    insertPolicyEvidence(db, targetId, outcomeId, 'outcome');
+    const watermark = Number(db.prepare('SELECT max(id) AS id FROM historical_backfill_items').get().id);
+    insertSearches(db, targetId, watermark, { implementation: 'verified', outcome: 'verified' });
+    db.prepare("UPDATE historical_backfill_items SET content_text = content_text || '异常改动' WHERE id = ?")
+      .run(implementationId);
+    const item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(targetId);
+    const assessment = assessHistoricalPolicy(db, item);
+    assert.equal(assessment.releaseEligible, false);
+    assert.ok(assessment.failedGates.includes('implementation_evidence'));
+  } finally {
+    db.close();
+  }
+});
+
+test('automatic analysis cannot approve not-applicable evidence statuses', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const targetId = insertTarget(db, '16', { implementation: 'not_applicable', outcome: 'not_found' });
+    const watermark = Number(db.prepare('SELECT max(id) AS id FROM historical_backfill_items').get().id);
+    insertSearches(db, targetId, watermark, { implementation: 'not_applicable', outcome: 'not_found' });
+    const item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(targetId);
+    const assessment = assessHistoricalPolicy(db, item);
+    assert.equal(assessment.releaseEligible, false);
+    assert.ok(assessment.failedGates.includes('implementation_evidence'));
   } finally {
     db.close();
   }

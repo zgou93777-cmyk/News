@@ -4,10 +4,16 @@ const crypto = require('node:crypto');
 
 const { classifyCategory, importanceFor } = require('./analysis');
 const { adaptiveBatchSize, currentLoadSnapshot } = require('./historical-backfill');
-const { inputChecksum, loadAnalysisInputs } = require('./historical-analysis');
+const {
+  inputChecksum,
+  loadAnalysisInputs,
+  MINIMUM_CONFIDENCE
+} = require('./historical-analysis');
+const { officialEvidenceUrl } = require('./historical-review');
+const { checksumMatches } = require('./historical-verification');
 const { buildAssessment } = require('./lineage');
 
-const RELEASE_METHODS = new Set(['historical-evidence-gates-v1', 'human-review-v1']);
+const RELEASE_METHODS = new Set(['historical-evidence-gates-v2', 'human-review-v1']);
 const EVENT_LABELS = Object.freeze({
   implementation: '实施证据',
   funding: '资金拨付证据',
@@ -22,6 +28,12 @@ function safeJson(value, fallback) {
   } catch {
     return fallback;
   }
+}
+
+function canonicalJson(value) {
+  if (Array.isArray(value)) return value.map(canonicalJson);
+  if (!value || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalJson(value[key])]));
 }
 
 function publicDocumentStatus(item) {
@@ -244,23 +256,46 @@ function insertEventsAndAssessment(db, familyId, documentId, item, analysis) {
 }
 
 function currentAssessment(db, item) {
-  const analysis = safeJson(item.analysis_json, {});
-  const assessmentId = Number(analysis.assessmentVersionId);
+  try {
+    officialEvidenceUrl(item.source_url);
+  } catch {
+    const error = new Error('ready item no longer has a valid official source URL');
+    error.code = 'STALE_ASSESSMENT';
+    throw error;
+  }
+  if (!checksumMatches(item)) {
+    const error = new Error('ready item source checksum no longer matches its content');
+    error.code = 'STALE_ASSESSMENT';
+    throw error;
+  }
+  const itemAnalysis = safeJson(item.analysis_json, {});
+  const assessmentId = Number(itemAnalysis.assessmentVersionId);
   if (!Number.isSafeInteger(assessmentId) || assessmentId < 1) {
     throw new Error('ready item has no approved historical assessment version');
   }
   const assessment = db.prepare(`
     SELECT * FROM historical_analysis_versions WHERE id = ? AND item_id = ?
   `).get(assessmentId, item.id);
-  if (!assessment || !assessment.release_eligible || !RELEASE_METHODS.has(assessment.methodology)) {
+  if (!assessment || !assessment.release_eligible || Number(assessment.confidence) < MINIMUM_CONFIDENCE
+      || !RELEASE_METHODS.has(assessment.methodology)) {
     throw new Error('historical assessment is not eligible for automatic release');
   }
   const gates = safeJson(assessment.gates_json, []);
   if (!gates.length || gates.some((entry) => entry.passed !== true)) {
     throw new Error('historical assessment contains an unpassed release gate');
   }
+  const analysis = safeJson(assessment.analysis_json, null);
+  const itemAnalysisPayload = { ...itemAnalysis };
+  delete itemAnalysisPayload.assessmentVersionId;
+  delete itemAnalysisPayload.assessmentVersion;
+  if (!analysis || Number(itemAnalysis.assessmentVersion) !== Number(assessment.version)
+      || JSON.stringify(canonicalJson(itemAnalysisPayload)) !== JSON.stringify(canonicalJson(analysis))) {
+    const error = new Error('ready item analysis does not match its immutable assessment version');
+    error.code = 'STALE_ASSESSMENT';
+    throw error;
+  }
   const currentFingerprint = inputChecksum(item, loadAnalysisInputs(db, item));
-  if (assessment.methodology === 'historical-evidence-gates-v1' && currentFingerprint !== assessment.input_checksum) {
+  if (assessment.methodology === 'historical-evidence-gates-v2' && currentFingerprint !== assessment.input_checksum) {
     const error = new Error('historical assessment is stale relative to the private corpus');
     error.code = 'STALE_ASSESSMENT';
     throw error;
@@ -278,24 +313,21 @@ function requeueStaleAssessment(db, item, message) {
 }
 
 function releaseHistoricalItem(db, item) {
-  let approved;
-  try {
-    approved = currentAssessment(db, item);
-  } catch (error) {
-    if (error.code === 'STALE_ASSESSMENT') requeueStaleAssessment(db, item, error.message);
-    throw error;
-  }
-  const { assessment, analysis } = approved;
-  const alreadyReleased = db.prepare(`
-    SELECT * FROM historical_public_releases
-    WHERE item_id = ? AND assessment_version_id = ?
-  `).get(item.id, assessment.id);
-  if (alreadyReleased) {
-    return { itemId: item.id, action: 'already_released', documentId: alreadyReleased.document_id };
-  }
-
   db.exec('BEGIN IMMEDIATE');
   try {
+    item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(item.id);
+    if (!item || item.stage !== 'ready' || item.analysis_status !== 'verified') {
+      throw new Error('historical item is no longer ready for release');
+    }
+    const { assessment, analysis } = currentAssessment(db, item);
+    const alreadyReleased = db.prepare(`
+      SELECT * FROM historical_public_releases
+      WHERE item_id = ? AND assessment_version_id = ?
+    `).get(item.id, assessment.id);
+    if (alreadyReleased) {
+      db.exec('COMMIT');
+      return { itemId: item.id, action: 'already_released', documentId: alreadyReleased.document_id };
+    }
     const category = classifyCategory({ title: item.title, contentText: item.content_text });
     const sourceId = resolveSource(db, item);
     const familyId = resolveFamily(db, historicalFamily(item, category));
@@ -331,6 +363,7 @@ function releaseHistoricalItem(db, item) {
     };
   } catch (error) {
     db.exec('ROLLBACK');
+    if (error.code === 'STALE_ASSESSMENT') requeueStaleAssessment(db, item, error.message);
     throw error;
   }
 }
@@ -388,8 +421,16 @@ async function runHistoricalReleaseQueue(db, options = {}, dependencies = {}) {
       }
     } catch (error) {
       const current = db.prepare('SELECT stage FROM historical_backfill_items WHERE id = ?').get(item.id);
-      if (current?.stage === 'lifecycle_verified') result.requeued += 1;
-      else updateReleaseFailure(db, item, error);
+      if (current?.stage === 'lifecycle_verified') {
+        result.requeued += 1;
+        result.items.push({
+          itemId: item.id,
+          action: 'assessment_requeued',
+          message: String(error.message || error)
+        });
+        continue;
+      }
+      updateReleaseFailure(db, item, error);
       result.errors.push({ id: item.id, url: item.source_url, message: error.message });
     }
   }

@@ -16,6 +16,8 @@ It never creates a public article.
 
 Observed results do not prove policy causation. Meetings, plans, intended funding,
 and policy releases remain excluded evidence and cannot raise a classification.
+`partial` describes an incomplete public evidence chain; it does not assert that an
+unobserved implementation or result did not happen.
 
 ## Release gates
 
@@ -31,6 +33,17 @@ Each assessment records the result and reason for all of these checks:
 7. Complete, current outcome evidence search.
 8. No critical evidence conflicts.
 9. Minimum evidence confidence of `0.95`.
+
+The automated confidence floor is fixed at `0.95`; runtime options may raise it but
+cannot lower it. Every accepted implementation or outcome row must still point to a
+currently verified source and metadata record, match that source's publication date,
+retain a verbatim quote found in checksum-valid source text, and agree with the
+completed search count. `not_applicable` can only be approved by `human-review-v1`.
+
+Methodology `historical-evidence-gates-v2` stores every verified metadata quote and
+accepted policy-evidence quote as a structured citation with its official URL,
+observed date, confidence, and source state. It also stores both complete search
+scopes; quotes are not truncated to a display-only sample.
 
 Passing an assessment changes the private queue item to `ready`. Failing an
 assessment leaves it private and records the failed gate names. Every distinct

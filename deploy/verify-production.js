@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 'use strict';
 
+const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const EXPECTED_SCHEMA = '8';
+const EXPECTED_SCHEMA = '9';
 const REQUIRED_TABLES = [
   'historical_backfill_items',
   'historical_artifacts',
@@ -39,6 +40,26 @@ function verifyDatabase(db) {
   const missingTables = REQUIRED_TABLES.filter((name) => !tables.has(name));
   add('historical_tables', missingTables.length === 0, missingTables.join(', '));
   if (missingTables.length === 0) {
+    const acceptedEvidence = db.prepare(`
+      SELECT evidence.source_url, evidence.evidence_quote, evidence.observed_at,
+        source.id AS source_id, source.source_status, source.metadata_status,
+        source.source_url AS current_source_url, source.published_at,
+        source.content_text, source.checksum
+      FROM historical_policy_evidence evidence
+      LEFT JOIN historical_backfill_items source ON source.id = evidence.source_item_id
+      WHERE evidence.classification = 'accepted'
+    `).all();
+    const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
+    const invalidEvidence = acceptedEvidence.filter((row) => {
+      const text = String(row.content_text || '');
+      const checksumValid = row.checksum && text
+        && (row.checksum === digest(text) || row.checksum === digest(text.replace(/\s+/g, '')));
+      return !row.source_id || row.source_status !== 'verified' || row.metadata_status !== 'verified'
+        || row.current_source_url !== row.source_url || row.published_at !== row.observed_at
+        || !text.includes(row.evidence_quote) || !checksumValid;
+    });
+    add('historical_evidence_sources', invalidEvidence.length === 0,
+      `${invalidEvidence.length} invalid accepted evidence source(s)`);
     const integrity = db.prepare(`
       SELECT
         count(*) FILTER (
@@ -46,6 +67,18 @@ function verifyDatabase(db) {
             SELECT 1 FROM historical_analysis_versions assessment
             WHERE assessment.id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
               AND assessment.item_id = item.id AND assessment.release_eligible = 1
+              AND assessment.confidence >= 0.95
+              AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+              AND assessment.version = CAST(json_extract(item.analysis_json, '$.assessmentVersion') AS INTEGER)
+              AND assessment.review_status = json_extract(item.analysis_json, '$.reviewStatus')
+              AND assessment.confidence = CAST(json_extract(item.analysis_json, '$.confidence') AS REAL)
+              AND assessment.methodology = json_extract(item.analysis_json, '$.methodology')
+              AND json_extract(item.analysis_json, '$.gates') = assessment.gates_json
+              AND json_array_length(assessment.gates_json) > 0
+              AND NOT EXISTS (
+                SELECT 1 FROM json_each(assessment.gates_json) gate
+                WHERE json_extract(gate.value, '$.passed') IS NOT 1
+              )
           )
         ) AS assessment_violations,
         count(*) FILTER (

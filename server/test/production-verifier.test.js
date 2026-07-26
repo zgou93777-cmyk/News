@@ -23,6 +23,40 @@ test('production verifier checks schema, SQLite integrity and historical mapping
   }
 });
 
+test('production verifier rejects accepted evidence whose source is not currently verified', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const targetId = Number(db.prepare(`
+      INSERT INTO historical_backfill_items (
+        source_url, source_name, item_kind, source_year, title, stage
+      ) VALUES ('https://www.gov.cn/target.htm', 'Official archive', 'document', 2000, 'Target', 'needs_review')
+    `).run().lastInsertRowid);
+    const sourceId = Number(db.prepare(`
+      INSERT INTO historical_backfill_items (
+        source_url, source_name, item_kind, source_year, title, published_at,
+        content_text, checksum, stage, source_status, metadata_status
+      ) VALUES ('https://www.gov.cn/source.htm', 'Official archive', 'document', 2001,
+        'Evidence', '2001-01-01T00:00:00+08:00', 'Evidence quote', ?,
+        'needs_review', 'pending', 'pending')
+    `).run('0'.repeat(64)).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO historical_policy_evidence (
+        item_id, source_item_id, evidence_type, classification, title, source_url,
+        evidence_quote, observed_at, details_json, extractor, confidence
+      ) VALUES (?, ?, 'implementation', 'accepted', 'Evidence',
+        'https://www.gov.cn/source.htm', 'Evidence quote', '2001-01-01T00:00:00+08:00',
+        '{}', 'test', 0.99)
+    `).run(targetId, sourceId);
+    const report = verifyDatabase(db);
+    assert.equal(report.ok, false);
+    const check = report.checks.find((entry) => entry.name === 'historical_evidence_sources');
+    assert.equal(check.ok, false);
+    assert.match(check.details, /1 invalid/);
+  } finally {
+    db.close();
+  }
+});
+
 test('OCR language parser requires exact language identifiers', () => {
   const languages = tesseractLanguages('List of available languages (2):\nchi_sim\neng\n');
   assert.equal(languages.has('chi_sim'), true);

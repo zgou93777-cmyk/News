@@ -11,8 +11,8 @@ that push. Historical rows remain private until every later release gate passes.
 | 2 | PDF cache, Chinese OCR, article segmentation, and failure retry | Complete |
 | 3 | Issuer, document number, publication/effective/repeal dates, and replacement relations | Complete |
 | 4 | Implementation, paid funding, outcome evidence, and complete-corpus `not_found` | Complete |
-| 5 | Four statuses, confidence threshold, quote retention, and automatic release guards | In progress |
-| 6 | First 100-row regression, load test, and production deployment | Pending |
+| 5 | Four statuses, confidence threshold, quote retention, and automatic release guards | Complete |
+| 6 | First 100-row regression, load test, and production deployment | In progress |
 | 7 | Observe the first release cohort, then explicitly open the full historical queue | Pending |
 
 ## Release rules

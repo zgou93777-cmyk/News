@@ -303,8 +303,36 @@ async function routeApi(req, res, url, context) {
             SELECT 1 FROM historical_analysis_versions assessment
             WHERE assessment.id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
               AND assessment.item_id = item.id AND assessment.release_eligible = 1
+              AND assessment.confidence >= 0.95
+              AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+              AND assessment.version = CAST(json_extract(item.analysis_json, '$.assessmentVersion') AS INTEGER)
+              AND assessment.review_status = json_extract(item.analysis_json, '$.reviewStatus')
+              AND assessment.confidence = CAST(json_extract(item.analysis_json, '$.confidence') AS REAL)
+              AND assessment.methodology = json_extract(item.analysis_json, '$.methodology')
+              AND json_extract(item.analysis_json, '$.gates') = assessment.gates_json
+              AND json_array_length(assessment.gates_json) > 0
+              AND NOT EXISTS (
+                SELECT 1 FROM json_each(assessment.gates_json) gate
+                WHERE json_extract(gate.value, '$.passed') IS NOT 1
+              )
           )
         ) AS assessment_violations,
+        count(*) FILTER (
+          WHERE item.stage IN ('ready', 'published') AND EXISTS (
+            SELECT 1
+            FROM historical_policy_evidence evidence
+            LEFT JOIN historical_backfill_items source ON source.id = evidence.source_item_id
+            WHERE evidence.item_id = item.id AND evidence.classification = 'accepted'
+              AND (
+                source.id IS NULL OR source.source_status <> 'verified'
+                OR source.metadata_status <> 'verified'
+                OR source.source_url <> evidence.source_url
+                OR source.published_at <> evidence.observed_at
+                OR trim(source.checksum) = ''
+                OR instr(source.content_text, evidence.evidence_quote) = 0
+              )
+          )
+        ) AS evidence_source_violations,
         count(*) FILTER (
           WHERE item.stage = 'published' AND NOT EXISTS (
             SELECT 1 FROM historical_public_releases release
@@ -328,6 +356,7 @@ async function routeApi(req, res, url, context) {
         ready: Number(historicalIntegrity.ready),
         published: Number(historicalIntegrity.published),
         integrityOk: Number(historicalIntegrity.assessment_violations) === 0
+          && Number(historicalIntegrity.evidence_source_violations) === 0
           && Number(historicalIntegrity.release_violations) === 0
       },
       uptimeSeconds: Math.floor(process.uptime()),

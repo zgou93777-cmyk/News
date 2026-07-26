@@ -7,6 +7,13 @@ const crypto = require('node:crypto');
 const LIFECYCLE_STATUSES = new Set(['verified', 'not_applicable']);
 const EVIDENCE_STATUSES = new Set(['verified', 'not_found', 'not_applicable']);
 
+function sourceChecksumMatches(item) {
+  const text = String(item.content_text || '');
+  if (!item.checksum || !text) return false;
+  const digest = (value) => crypto.createHash('sha256').update(value).digest('hex');
+  return item.checksum === digest(text) || item.checksum === digest(text.replace(/\s+/g, ''));
+}
+
 function nonEmptyString(value, name) {
   if (typeof value !== 'string' || !value.trim()) throw new Error(`${name} is required`);
   return value.trim();
@@ -88,6 +95,30 @@ function validateHistoricalReview(item, input) {
     throw new Error('analysis.evidenceQuotes must contain verbatim source evidence');
   }
   analysis.evidenceQuotes = analysis.evidenceQuotes.map((quote, index) => nonEmptyString(quote, `analysis.evidenceQuotes[${index}]`));
+  const citations = [
+    ...implementationEvidence.map((entry) => ({ kind: 'implementation', ...entry })),
+    ...outcomeEvidence.map((entry) => ({ kind: 'outcome', ...entry }))
+  ];
+  for (const quote of analysis.evidenceQuotes) {
+    if (citations.some((entry) => entry.evidenceQuote.includes(quote))) continue;
+    if (!String(item.content_text || '').includes(quote)) {
+      throw new Error('every analysis evidence quote must match the source text or a structured evidence entry');
+    }
+    citations.push({
+      kind: 'source',
+      title: input.title || item.title,
+      sourceUrl,
+      evidenceQuote: quote,
+      observedAt: optionalDate(input.publishedAt || item.published_at, 'publishedAt')
+    });
+  }
+  analysis.citations = citations.map((entry) => ({
+    kind: entry.kind,
+    title: entry.title,
+    sourceUrl: entry.sourceUrl,
+    quote: entry.evidenceQuote,
+    observedAt: entry.observedAt
+  }));
 
   const publishedAt = optionalDate(input.publishedAt || item.published_at, 'publishedAt');
   if (!publishedAt) throw new Error('publishedAt is required');
@@ -118,6 +149,7 @@ function runHistoricalReview(db, options = {}) {
   if (!options.reviewFile) throw new Error('--review-file is required with --historical-review');
   const item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(id);
   if (!item) throw new Error(`historical queue item ${id} was not found`);
+  if (!sourceChecksumMatches(item)) throw new Error('historical review source checksum does not match its content');
   const input = JSON.parse(fs.readFileSync(path.resolve(options.reviewFile), 'utf8'));
   const review = validateHistoricalReview(item, input);
 

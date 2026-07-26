@@ -208,6 +208,7 @@ test('human review requires official evidence and a complete cycle/implementatio
   const reviewed = validateHistoricalReview(item, valid);
   assert.equal(reviewed.lifecycleStatus, 'verified');
   assert.equal(reviewed.implementationEvidence.length, 1);
+  assert.equal(reviewed.analysis.citations.length, 1);
   assert.throws(
     () => validateHistoricalReview(item, { ...valid, evidenceUrls: ['https://example.com/a'] }),
     /official \.gov\.cn/
@@ -215,6 +216,13 @@ test('human review requires official evidence and a complete cycle/implementatio
   assert.throws(
     () => validateHistoricalReview(item, { ...valid, implementationEvidence: [] }),
     /requires evidence/
+  );
+  assert.throws(
+    () => validateHistoricalReview(item, {
+      ...valid,
+      analysis: { ...valid.analysis, evidenceQuotes: ['原文和结构化证据中都不存在的句子。'] }
+    }),
+    /must match the source text or a structured evidence entry/
   );
 });
 
@@ -311,6 +319,7 @@ test('historical audit exposes recoverable work, blocked stages and integrity ri
       documentLinkViolations: 0,
       orphanedParents: 0,
       staleReadyAssessments: 0,
+      evidenceSourceViolations: 0,
       assessmentLinkViolations: 0,
       publicReleaseViolations: 0,
       publicDocumentMismatches: 0,

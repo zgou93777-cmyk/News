@@ -10,7 +10,8 @@ const REVIEW_STATUSES = new Set(['verified', 'partial', 'ambiguous', 'watching']
 const FINAL_EVIDENCE_STATUSES = new Set(['verified', 'not_found', 'not_applicable']);
 const CORE_CLAIMS = ['source', 'title', 'issuer', 'published_at'];
 const CONFLICT_CLAIMS = ['title', 'issuer', 'document_number', 'published_at', 'effective_at', 'repealed_at'];
-const METHODOLOGY = 'historical-evidence-gates-v1';
+const METHODOLOGY = 'historical-evidence-gates-v2';
+const MINIMUM_CONFIDENCE = 0.95;
 
 function safeJson(value, fallback) {
   try {
@@ -37,12 +38,35 @@ function loadAnalysisInputs(db, item) {
     ORDER BY claim_type, status, value_text, source_url, evidence_quote, id
   `).all(item.id);
   const evidence = db.prepare(`
-    SELECT evidence_type, classification, title, source_url, evidence_quote,
-      observed_at, details_json, extractor, confidence, source_item_id, id
-    FROM historical_policy_evidence
-    WHERE item_id = ?
-    ORDER BY evidence_type, classification, observed_at, source_item_id, id
-  `).all(item.id);
+    SELECT evidence.evidence_type, evidence.classification, evidence.title,
+      evidence.source_url, evidence.evidence_quote, evidence.observed_at,
+      evidence.details_json, evidence.extractor, evidence.confidence,
+      evidence.source_item_id, evidence.id,
+      source.source_status AS evidence_source_status,
+      source.metadata_status AS evidence_metadata_status,
+      source.source_url AS current_source_url,
+      source.published_at AS current_published_at,
+      source.checksum AS current_source_checksum,
+      CASE WHEN evidence.classification = 'accepted' THEN source.content_text ELSE '' END AS current_source_text
+    FROM historical_policy_evidence evidence
+    LEFT JOIN historical_backfill_items source ON source.id = evidence.source_item_id
+    WHERE evidence.item_id = ?
+    ORDER BY evidence.evidence_type, evidence.classification,
+      evidence.observed_at, evidence.source_item_id, evidence.id
+  `).all(item.id).map((row) => {
+    const currentSourceText = String(row.current_source_text || '');
+    const enriched = {
+      ...row,
+      source_checksum_valid: row.classification === 'accepted'
+        ? checksumMatches({ content_text: currentSourceText, checksum: row.current_source_checksum })
+        : null,
+      quote_matches_source: row.classification === 'accepted'
+        ? currentSourceText.includes(row.evidence_quote)
+        : null
+    };
+    delete enriched.current_source_text;
+    return enriched;
+  });
   const searches = db.prepare(`
     SELECT evidence_scope, status, corpus_watermark, candidates_checked,
       accepted_matches, search_scope, searched_at
@@ -60,6 +84,7 @@ function inputChecksum(item, inputs) {
   const snapshot = {
     item: {
       checksum: item.checksum,
+      checksumValid: checksumMatches(item),
       sourceUrl: item.source_url,
       title: item.title,
       issuer: item.issuer,
@@ -162,7 +187,7 @@ function lifecycleGate(item, verification, cycle, minimumConfidence) {
     return gate('lifecycle_evidence', false, '政策周期尚未核验完成');
   }
   if (item.lifecycle_status === 'not_applicable') {
-    return gate('lifecycle_evidence', true, '经人工审核确认不适用生命周期核验');
+    return gate('lifecycle_evidence', false, '生命周期不适用只能由 human-review-v1 人工核验流程确认');
   }
   if (!cycle.archiveCoverageComplete || !FINAL_EVIDENCE_STATUSES.has(cycle.effectiveStatus)
       || !FINAL_EVIDENCE_STATUSES.has(cycle.endedStatus)) {
@@ -187,7 +212,7 @@ function evidenceGate(scope, status, inputs, minimumConfidence) {
     return gate(`${scope}_evidence`, false, `${scope} 仍在等待证据`);
   }
   if (status === 'not_applicable') {
-    return gate(`${scope}_evidence`, true, `经人工审核确认 ${scope} 不适用`);
+    return gate(`${scope}_evidence`, false, `${scope} 不适用只能由 human-review-v1 人工核验流程确认`);
   }
   const search = inputs.searches.find((row) => row.evidence_scope === scope);
   if (!search || search.status !== 'complete' || !search.search_scope.trim()) {
@@ -202,10 +227,21 @@ function evidenceGate(scope, status, inputs, minimumConfidence) {
     return gate(`${scope}_evidence`, accepted.length === 0 && Number(search.accepted_matches) === 0,
       accepted.length ? `${scope} 标记为未找到但仍存在采纳证据` : `${scope} 在完整官方检索范围内未找到`);
   }
-  const valid = accepted.some((row) => row.evidence_quote.trim() && officialUrl(row.source_url)
-    && row.observed_at && Number(row.confidence) >= minimumConfidence);
+  if (Number(search.accepted_matches) !== accepted.length) {
+    return gate(`${scope}_evidence`, false, `${scope} 的检索计数与已采纳证据数量不一致`);
+  }
+  const valid = accepted.length > 0 && accepted.every((row) => row.evidence_quote.trim()
+    && officialUrl(row.source_url)
+    && officialUrl(row.current_source_url) === officialUrl(row.source_url)
+    && row.evidence_source_status === 'verified'
+    && row.evidence_metadata_status === 'verified'
+    && row.source_checksum_valid === true
+    && row.quote_matches_source === true
+    && row.observed_at
+    && row.current_published_at === row.observed_at
+    && Number(row.confidence) >= minimumConfidence);
   return gate(`${scope}_evidence`, valid,
-    valid ? `${scope} 至少有一条达到门槛的官方证据` : `${scope} 缺少达到门槛的官方证据`);
+    valid ? `${scope} 的全部采纳证据均达到来源、引用和置信门槛` : `${scope} 存在来源失效、引用缺失或置信度不足的采纳证据`);
 }
 
 function reviewStatusFor(item, ambiguities) {
@@ -231,19 +267,46 @@ function confidenceFor(item, inputs, minimumConfidence) {
     ? minimumConfidence : 1).toFixed(4));
 }
 
+function analysisCitations(inputs) {
+  const citations = inputs.verification
+    .filter((row) => row.status === 'verified')
+    .map((row) => ({
+      kind: 'verification',
+      claimType: row.claim_type,
+      value: row.value_text,
+      quote: row.evidence_quote,
+      sourceUrl: row.source_url,
+      observedAt: row.observed_at,
+      confidence: Number(row.confidence)
+    }));
+  citations.push(...inputs.evidence
+    .filter((row) => row.classification === 'accepted')
+    .map((row) => ({
+      kind: 'policy_evidence',
+      evidenceType: row.evidence_type,
+      title: row.title,
+      quote: row.evidence_quote,
+      sourceUrl: row.source_url,
+      observedAt: row.observed_at,
+      confidence: Number(row.confidence),
+      sourceStatus: row.evidence_source_status,
+      metadataStatus: row.evidence_metadata_status,
+      sourceChecksum: row.current_source_checksum
+    })));
+  return citations;
+}
+
 function buildAnalysis(item, reviewStatus, confidence, ambiguities, gates, inputs) {
   const implementationObserved = item.implementation_status === 'verified';
   const outcomeObserved = item.outcome_status === 'verified';
   const summaries = {
     verified: '已找到明确实施证据和官方结果证据；结果被观察到不等于已经证明由该政策单独造成。',
-    partial: `已核验${implementationObserved ? '实施' : '结果'}证据，但${outcomeObserved ? '实施链路' : '结果证据'}仍未完整兑现。`,
+    partial: `已核验${implementationObserved ? '实施' : '结果'}证据；另一环节在完整官方检索范围内未找到合格证据，未找到不等于未发生。`,
     ambiguous: '关键官方证据之间存在冲突，当前只记录歧义，不选择性采信。',
     watching: '在已完成的官方检索范围内尚未找到明确实施或结果证据；未找到不等于实际未发生。'
   };
-  const evidenceQuotes = [...new Set([
-    ...inputs.verification.filter((row) => row.status === 'verified').map((row) => row.evidence_quote),
-    ...inputs.evidence.filter((row) => row.classification === 'accepted').map((row) => row.evidence_quote)
-  ].filter(Boolean))].slice(0, 50);
+  const citations = analysisCitations(inputs);
+  const evidenceQuotes = [...new Set(citations.map((entry) => entry.quote).filter(Boolean))];
   return {
     reviewStatus,
     confidence,
@@ -256,14 +319,27 @@ function buildAnalysis(item, reviewStatus, confidence, ambiguities, gates, input
       ? '结果导向官方材料包含已观察进展或量化结果；本结论不外推政策因果。'
       : '完整检索范围内未找到符合门槛的结果导向官方证据。',
     ambiguities,
+    citations,
     evidenceQuotes,
+    searchScopes: inputs.searches.map((search) => ({
+      scope: search.evidence_scope,
+      status: search.status,
+      corpusWatermark: Number(search.corpus_watermark),
+      candidatesChecked: Number(search.candidates_checked),
+      acceptedMatches: Number(search.accepted_matches),
+      searchScope: search.search_scope,
+      searchedAt: search.searched_at
+    })),
     gates,
     methodology: METHODOLOGY
   };
 }
 
 function assessHistoricalPolicy(db, item, options = {}) {
-  const minimumConfidence = Number(options.minimumConfidence || 0.95);
+  const requestedConfidence = Number(options.minimumConfidence);
+  const minimumConfidence = Number.isFinite(requestedConfidence)
+    ? Math.min(1, Math.max(MINIMUM_CONFIDENCE, requestedConfidence))
+    : MINIMUM_CONFIDENCE;
   const inputs = loadAnalysisInputs(db, item);
   const cycle = safeJson(item.policy_cycle_json, null);
   const ambiguities = claimConflicts(item, inputs.verification, cycle);
@@ -400,6 +476,7 @@ async function runHistoricalAnalysisQueue(db, options = {}, dependencies = {}) {
 
 module.exports = {
   METHODOLOGY,
+  MINIMUM_CONFIDENCE,
   assessHistoricalPolicy,
   inputChecksum,
   loadAnalysisInputs,
