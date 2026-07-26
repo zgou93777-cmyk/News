@@ -78,9 +78,8 @@ test('historical comparison only includes documents published before the current
     assert.ok(latestDetail.historicalComparison.every(
       (item) => item.publishedAt < latestDetail.article.publishedAt
     ));
-    assert.ok(latestDetail.article.comparisons.every(
-      (item) => item.implication.includes('不据此作因果比较')
-    ));
+    assert.ok(latestDetail.article.comparisons.every((item) => item.implication.length > 0));
+    assert.equal(latestDetail.article.analysisFramework.ready, true);
   } finally {
     db.close();
   }

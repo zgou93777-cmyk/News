@@ -40,7 +40,7 @@ test('health and categories expose database state', async () => {
   assert.equal(healthResponse.headers.get('x-content-type-options'), 'nosniff');
   const health = await healthResponse.json();
   assert.equal(health.status, 'ok');
-  assert.equal(health.schemaVersion, '14');
+  assert.equal(health.schemaVersion, '15');
   assert.equal(health.pushEnabled, true);
   assert.deepEqual(health.historical.byStage, {});
   assert.equal(health.historical.integrityOk, true);
@@ -145,8 +145,12 @@ test('article detail includes original evidence, version history, forecasts and 
   assert.equal(response.status, 200);
   const { data } = await response.json();
   assert.equal(data.currentAnalysis.version, 2);
+  assert.equal(data.currentAnalysis.framework.ready, true);
+  assert.match(data.currentAnalysis.framework.perspective, /公共政策执行/);
+  assert.match(data.article.analysisFramework.bottomLine, /不是新增补贴清单/);
   assert.equal(data.analysisHistory.length, 2);
   assert.equal(data.historicalComparison.length, 2);
+  assert.equal(data.article.comparisons.length, 3);
   assert.ok(data.signals.some((item) => item.value === '60万亿元左右'));
   assert.ok(data.forecasts.some((item) => item.status === 'monitoring'));
   assert.ok(data.ambiguities.some((item) => /法律或统计分类/.test(item.description)));

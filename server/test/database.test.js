@@ -11,6 +11,7 @@ const REQUIRED_TABLES = [
   'policy_families',
   'policy_signals',
   'analysis_versions',
+  'analysis_frameworks',
   'forecasts',
   'implementation_events',
   'ambiguities',
@@ -130,6 +131,7 @@ test('seed is idempotent and contains the verified 15th five-year example', () =
     seedDatabase(db);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 3);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM analysis_versions').get().count, 4);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM analysis_frameworks').get().count, 3);
 
     const document = db.prepare(`
       SELECT * FROM documents WHERE original_url = ?
@@ -149,6 +151,11 @@ test('seed is idempotent and contains the verified 15th five-year example', () =
     assert.equal(latest.version, 2);
     assert.match(latest.interpretation, /不代表住房在法律或统计上被重新分类/);
     assert.match(latest.recommendations, /不把“住房消费”表述误读/);
+    const framework = JSON.parse(db.prepare(`
+      SELECT framework_json FROM analysis_frameworks WHERE analysis_version_id = ?
+    `).get(latest.id).framework_json);
+    assert.equal(framework.ready, true);
+    assert.match(framework.bottomLine, /不是新增补贴清单/);
     assert.ok(db.prepare('SELECT COUNT(*) AS count FROM forecasts WHERE analysis_version_id = ?').get(latest.id).count >= 3);
     assert.ok(db.prepare('SELECT COUNT(*) AS count FROM ambiguities WHERE document_id = ?').get(document.id).count >= 3);
   } finally {
@@ -167,6 +174,11 @@ test('published analysis history cannot be overwritten or deleted', () => {
     );
     assert.throws(
       () => db.prepare('DELETE FROM analysis_versions WHERE id = ?').run(analysis.id),
+      /immutable/
+    );
+    assert.throws(
+      () => db.prepare('UPDATE analysis_frameworks SET method = ? WHERE analysis_version_id = ?')
+        .run('changed', analysis.id),
       /immutable/
     );
   } finally {

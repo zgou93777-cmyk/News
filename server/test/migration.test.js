@@ -76,7 +76,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
 
     const upgraded = openDatabase(filename);
     try {
-      assert.equal(getSchemaVersion(upgraded), '14');
+      assert.equal(getSchemaVersion(upgraded), '15');
       const retry = upgraded.prepare(`
         SELECT next_attempt_at,
           next_attempt_at > '2026-07-26T10:00:00.000Z' AS remains_deferred
@@ -89,6 +89,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         SELECT name FROM sqlite_schema WHERE type = 'table'
       `).all().map((row) => row.name));
       for (const name of [
+        'analysis_frameworks',
         'historical_artifacts',
         'historical_segmentation_submissions',
         'historical_segmentation_submission_items',
