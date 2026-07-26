@@ -562,6 +562,103 @@ BEGIN
   SELECT RAISE(ABORT, 'historical analysis versions are immutable; deletion is not allowed');
 END;
 
+CREATE TABLE IF NOT EXISTS historical_analysis_frameworks (
+  id INTEGER PRIMARY KEY,
+  assessment_version_id INTEGER NOT NULL REFERENCES historical_analysis_versions(id) ON DELETE RESTRICT,
+  version INTEGER NOT NULL CHECK (version > 0),
+  source_checksum TEXT NOT NULL CHECK (length(source_checksum) = 64),
+  input_checksum TEXT NOT NULL CHECK (length(input_checksum) = 64),
+  response_checksum TEXT NOT NULL CHECK (length(response_checksum) = 64),
+  framework_json TEXT NOT NULL CHECK (
+    json_valid(framework_json)
+    AND json_type(framework_json) = 'object'
+    AND json_type(framework_json, '$.ready') IN ('true', 'false')
+    AND trim(coalesce(json_extract(framework_json, '$.perspective'), '')) <> ''
+    AND trim(coalesce(json_extract(framework_json, '$.bottomLine'), '')) <> ''
+  ),
+  evidence_json TEXT NOT NULL CHECK (json_valid(evidence_json) AND json_type(evidence_json) = 'array'),
+  method TEXT NOT NULL CHECK (trim(method) <> ''),
+  model_name TEXT NOT NULL CHECK (trim(model_name) <> ''),
+  prompt_version TEXT NOT NULL CHECK (trim(prompt_version) <> ''),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE(assessment_version_id, version),
+  UNIQUE(assessment_version_id, response_checksum)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_framework_ready
+ON historical_analysis_frameworks(assessment_version_id, version DESC);
+
+CREATE TRIGGER IF NOT EXISTS historical_analysis_frameworks_ready_insert_guard
+BEFORE INSERT ON historical_analysis_frameworks
+WHEN json_extract(NEW.framework_json, '$.ready') IS 1
+BEGIN
+  SELECT CASE WHEN
+    trim(coalesce(json_extract(NEW.framework_json, '$.problem'), '')) = '' OR
+    json_array_length(NEW.framework_json, '$.problemEvidence') = 0 OR
+    json_array_length(NEW.framework_json, '$.tools') = 0 OR
+    json_array_length(NEW.framework_json, '$.affectedGroups') = 0 OR
+    json_array_length(NEW.framework_json, '$.executionPath') = 0 OR
+    json_array_length(NEW.evidence_json) = 0 OR
+    EXISTS (
+      SELECT 1 FROM json_each(NEW.framework_json, '$.tools') entry
+      WHERE json_array_length(entry.value, '$.evidence') = 0
+    ) OR
+    EXISTS (
+      SELECT 1 FROM json_each(NEW.framework_json, '$.affectedGroups') entry
+      WHERE json_array_length(entry.value, '$.evidence') = 0
+    ) OR
+    EXISTS (
+      SELECT 1 FROM json_each(NEW.framework_json, '$.executionPath') entry
+      WHERE json_array_length(entry.value, '$.evidence') = 0
+    ) OR
+    EXISTS (
+      SELECT 1 FROM json_each(NEW.evidence_json) citation
+      WHERE trim(coalesce(json_extract(citation.value, '$.quote'), '')) = ''
+        OR NOT (
+          json_extract(citation.value, '$.sourceUrl') LIKE 'https://gov.cn/%'
+          OR json_extract(citation.value, '$.sourceUrl') GLOB 'https://*.gov.cn/*'
+        )
+    ) OR
+    EXISTS (
+      SELECT 1 FROM json_each(NEW.evidence_json) citation
+      WHERE json_extract(citation.value, '$.sourceItemId') IS NOT NULL
+        AND NOT EXISTS (
+          SELECT 1 FROM historical_backfill_items source
+          WHERE source.id = CAST(json_extract(citation.value, '$.sourceItemId') AS INTEGER)
+            AND source.source_status = 'verified' AND source.metadata_status = 'verified'
+            AND (
+              source.source_url = json_extract(citation.value, '$.sourceUrl')
+              OR (
+                instr(source.source_url, '#') > 0
+                AND substr(source.source_url, 1, instr(source.source_url, '#') - 1)
+                  = json_extract(citation.value, '$.sourceUrl')
+              )
+            )
+            AND instr(source.content_text, json_extract(citation.value, '$.quote')) > 0
+        )
+    ) OR
+    NOT EXISTS (
+      SELECT 1 FROM historical_analysis_versions assessment
+      JOIN historical_backfill_items item ON item.id = assessment.item_id
+      WHERE assessment.id = NEW.assessment_version_id
+        AND assessment.release_eligible = 1 AND assessment.confidence >= 0.95
+        AND item.checksum = NEW.source_checksum
+    )
+  THEN RAISE(ABORT, 'historical structured framework is incomplete or unlinked') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_analysis_frameworks_immutable_update
+BEFORE UPDATE ON historical_analysis_frameworks
+BEGIN
+  SELECT RAISE(ABORT, 'historical analysis frameworks are immutable; insert a new version');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_analysis_frameworks_immutable_delete
+BEFORE DELETE ON historical_analysis_frameworks
+BEGIN
+  SELECT RAISE(ABORT, 'historical analysis frameworks are immutable; deletion is not allowed');
+END;
+
 CREATE TABLE IF NOT EXISTS historical_review_submissions (
   id INTEGER PRIMARY KEY,
   item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE RESTRICT,
@@ -749,15 +846,24 @@ BEGIN
     FROM historical_backfill_items item
     JOIN historical_analysis_versions assessment
       ON assessment.id = NEW.assessment_version_id AND assessment.item_id = item.id
+    JOIN historical_analysis_frameworks framework
+      ON framework.id = CAST(json_extract(item.analysis_json, '$.frameworkVersionId') AS INTEGER)
+      AND framework.assessment_version_id = assessment.id
     JOIN documents document ON document.id = NEW.document_id
     JOIN analysis_versions analysis ON analysis.id = NEW.analysis_version_id
       AND analysis.document_id = document.id AND analysis.status = 'published'
+    JOIN analysis_frameworks public_framework ON public_framework.analysis_version_id = analysis.id
     JOIN historical_release_control control ON control.id = 1
     WHERE item.id = NEW.item_id
       AND item.stage = 'ready' AND item.analysis_status = 'verified'
       AND (item.source_url LIKE 'https://gov.cn/%' OR item.source_url GLOB 'https://*.gov.cn/*')
       AND assessment.release_eligible = 1 AND assessment.confidence >= 0.95
       AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+      AND framework.source_checksum = item.checksum
+      AND json_extract(framework.framework_json, '$.ready') IS 1
+      AND json_array_length(framework.evidence_json) > 0
+      AND public_framework.framework_json = framework.framework_json
+      AND public_framework.method = framework.method
       AND (
         item.source_type <> 'pdf'
         OR EXISTS (
@@ -960,6 +1066,15 @@ BEGIN
           WHERE json_extract(gate.value, '$.passed') IS NOT 1
         )
     ) OR
+    NOT EXISTS (
+      SELECT 1 FROM historical_analysis_frameworks framework
+      WHERE framework.id = CAST(json_extract(NEW.analysis_json, '$.frameworkVersionId') AS INTEGER)
+        AND framework.assessment_version_id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
+        AND framework.version = CAST(json_extract(NEW.analysis_json, '$.frameworkVersion') AS INTEGER)
+        AND framework.source_checksum = NEW.checksum
+        AND json_extract(framework.framework_json, '$.ready') IS 1
+        AND json_array_length(framework.evidence_json) > 0
+    ) OR
     (NEW.stage = 'published' AND NOT EXISTS (
       SELECT 1 FROM historical_public_releases release
       WHERE release.item_id = NEW.id
@@ -1036,6 +1151,15 @@ BEGIN
           WHERE json_extract(gate.value, '$.passed') IS NOT 1
         )
     ) OR
+    NOT EXISTS (
+      SELECT 1 FROM historical_analysis_frameworks framework
+      WHERE framework.id = CAST(json_extract(NEW.analysis_json, '$.frameworkVersionId') AS INTEGER)
+        AND framework.assessment_version_id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
+        AND framework.version = CAST(json_extract(NEW.analysis_json, '$.frameworkVersion') AS INTEGER)
+        AND framework.source_checksum = NEW.checksum
+        AND json_extract(framework.framework_json, '$.ready') IS 1
+        AND json_array_length(framework.evidence_json) > 0
+    ) OR
     (NEW.stage = 'published' AND NOT EXISTS (
       SELECT 1 FROM historical_public_releases release
       WHERE release.item_id = NEW.id
@@ -1058,5 +1182,5 @@ SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at)
 WHERE next_attempt_at GLOB '????-??-?? ??:??:??*'
   AND strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at) IS NOT NULL;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '15')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '16')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;
