@@ -341,6 +341,15 @@ async function routeApi(req, res, url, context) {
         ) AS release_violations
       FROM historical_backfill_items item
     `).get();
+    const historicalRollout = db.prepare(`
+      SELECT control.mode, control.active_cohort_id, cohort.status AS cohort_status,
+        cohort.target_size,
+        (SELECT count(*) FROM historical_release_cohort_items item
+          WHERE item.cohort_id = cohort.id) AS cohort_items
+      FROM historical_release_control control
+      LEFT JOIN historical_release_cohorts cohort ON cohort.id = control.active_cohort_id
+      WHERE control.id = 1
+    `).get();
     sendJson(res, 200, {
       status: 'ok',
       database: 'ok',
@@ -355,6 +364,14 @@ async function routeApi(req, res, url, context) {
         byStage: Object.fromEntries(historicalRows.map((row) => [row.stage, Number(row.count)])),
         ready: Number(historicalIntegrity.ready),
         published: Number(historicalIntegrity.published),
+        rollout: {
+          mode: historicalRollout.mode,
+          activeCohortId: historicalRollout.active_cohort_id == null
+            ? null : Number(historicalRollout.active_cohort_id),
+          cohortStatus: historicalRollout.cohort_status || null,
+          targetSize: historicalRollout.target_size == null ? null : Number(historicalRollout.target_size),
+          cohortItems: Number(historicalRollout.cohort_items || 0)
+        },
         integrityOk: Number(historicalIntegrity.assessment_violations) === 0
           && Number(historicalIntegrity.evidence_source_violations) === 0
           && Number(historicalIntegrity.release_violations) === 0

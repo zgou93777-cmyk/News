@@ -312,6 +312,9 @@ test('historical audit exposes recoverable work, blocked stages and integrity ri
     assert.equal(audit.retry.maxAttempts, 4);
     assert.deepEqual(audit.retry.topErrors, [{ message: 'timeout', count: 2 }]);
     assert.deepEqual(audit.coverage, { earliestYear: 1954, latestYear: 2000, yearsRepresented: 5 });
+    assert.equal(audit.rollout.mode, 'disabled');
+    assert.equal(audit.rollout.activeCohortId, null);
+    assert.equal(audit.rollout.cohortItems, 0);
     assert.deepEqual(audit.integrity, {
       missingSourceYear: 0,
       documentsMissingMetadata: 1,

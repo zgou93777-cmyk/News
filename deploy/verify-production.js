@@ -6,7 +6,7 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const EXPECTED_SCHEMA = '9';
+const EXPECTED_SCHEMA = '10';
 const REQUIRED_TABLES = [
   'historical_backfill_items',
   'historical_artifacts',
@@ -14,6 +14,9 @@ const REQUIRED_TABLES = [
   'historical_policy_evidence',
   'historical_evidence_searches',
   'historical_analysis_versions',
+  'historical_release_cohorts',
+  'historical_release_cohort_items',
+  'historical_release_control',
   'historical_public_releases'
 ];
 const OCR_COMMANDS = [
@@ -60,6 +63,24 @@ function verifyDatabase(db) {
     });
     add('historical_evidence_sources', invalidEvidence.length === 0,
       `${invalidEvidence.length} invalid accepted evidence source(s)`);
+    const rollout = db.prepare(`
+      SELECT control.mode, control.active_cohort_id, cohort.status AS cohort_status,
+        cohort.target_size,
+        (SELECT count(*) FROM historical_release_cohort_items item
+          WHERE item.cohort_id = cohort.id) AS cohort_items
+      FROM historical_release_control control
+      LEFT JOIN historical_release_cohorts cohort ON cohort.id = control.active_cohort_id
+      WHERE control.id = 1
+    `).get();
+    const rolloutValid = rollout && (
+      rollout.mode === 'disabled'
+      || (rollout.mode === 'cohort' && rollout.cohort_status === 'approved'
+        && Number(rollout.cohort_items) === Number(rollout.target_size))
+      || (rollout.mode === 'full' && rollout.cohort_status === 'observing'
+        && Number(rollout.cohort_items) === Number(rollout.target_size))
+    );
+    add('historical_release_control', rolloutValid,
+      rollout ? `${rollout.mode}; cohort ${rollout.active_cohort_id || 'none'}` : 'missing singleton control');
     const integrity = db.prepare(`
       SELECT
         count(*) FILTER (

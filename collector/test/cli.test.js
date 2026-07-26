@@ -83,10 +83,20 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   assert.equal(parseArguments(['--historical-verify', '--adaptive-load']).historicalVerify, true);
   assert.equal(parseArguments(['--historical-evidence', '--adaptive-load']).historicalEvidence, true);
   assert.equal(parseArguments(['--historical-analyze', '--adaptive-load']).historicalAnalyze, true);
+  assert.equal(parseArguments(['--historical-cohort-audit', '--max-items', '100']).historicalCohortAudit, true);
+  const cohortApproval = parseArguments([
+    '--historical-cohort-approve', '7', '--approved-by', 'reviewer', '--approval-note', 'regression passed'
+  ]);
+  assert.equal(cohortApproval.historicalCohortApprove, '7');
+  assert.equal(cohortApproval.approvedBy, 'reviewer');
   assert.equal(parseArguments(['--historical-release', '--adaptive-load']).historicalRelease, true);
   assert.equal(parseArguments(['--historical-audit']).historicalAudit, true);
   assert.throws(
     () => parseArguments(['--historical-audit', '--historical-status']),
     /choose only one/
+  );
+  assert.throws(
+    () => parseArguments(['--historical-cohort-approve', '7']),
+    /requires --approved-by and --approval-note/
   );
 });

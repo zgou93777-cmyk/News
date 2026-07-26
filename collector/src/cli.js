@@ -20,6 +20,7 @@ const { runHistoricalVerificationQueue } = require('./historical-verification');
 const { runHistoricalEvidenceQueue } = require('./historical-evidence');
 const { runHistoricalAnalysisQueue } = require('./historical-analysis');
 const { runHistoricalReleaseQueue } = require('./historical-release');
+const { approveHistoricalCohort, auditHistoricalCohort } = require('./historical-cohort');
 const { runCollection, runSeedBackfill } = require('./pipeline');
 const { runReconcileLineage } = require('./reconcile-lineage');
 const { runReconcileRelevance } = require('./reconcile');
@@ -35,7 +36,9 @@ const VALUE_OPTIONS = new Map([
   ['--historical-source', 'historicalSource'], ['--historical-sources-file', 'historicalSourcesFile'],
   ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'], ['--min-items', 'minItems'],
   ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile'],
-  ['--historical-cache-dir', 'cacheDir'], ['--ocr-page-budget', 'ocrPageBudget']
+  ['--historical-cache-dir', 'cacheDir'], ['--ocr-page-budget', 'ocrPageBudget'],
+  ['--historical-cohort-approve', 'historicalCohortApprove'],
+  ['--approved-by', 'approvedBy'], ['--approval-note', 'approvalNote']
 ]);
 
 const HELP = `Usage:
@@ -53,6 +56,8 @@ const HELP = `Usage:
   node src/cli.js --historical-verify [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-evidence [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-analyze [--adaptive-load] [--max-items 100]
+  node src/cli.js --historical-cohort-audit [--max-items 100]
+  node src/cli.js --historical-cohort-approve <cohort-id> --approved-by <id> --approval-note <text>
   node src/cli.js --historical-release [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-status
   node src/cli.js --historical-audit
@@ -75,12 +80,16 @@ Options:
   --historical-verify      Verify private source metadata and official lifecycle evidence
   --historical-evidence    Find implementation, paid funding and outcome evidence
   --historical-analyze     Apply auditable four-status analysis and release gates
+  --historical-cohort-audit Validate the first complete private cohort without publishing
+  --historical-cohort-approve ID  Explicitly approve a validated cohort for limited release
   --historical-release     Publish only ready items that pass database release guards
   --adaptive-load          Recheck CPU and memory pressure between historical items
   --historical-status      Show private queue counts by stage
   --historical-audit       Audit recovery boundaries, integrity and current capacity
   --historical-review ID   Validate a structured human review; moves only to private ready state
   --review-file PATH       Review evidence, policy cycle, implementation, outcome and analysis JSON
+  --approved-by ID         Responsible reviewer for cohort approval
+  --approval-note TEXT     Approval scope and regression decision for the cohort
   --from-year YYYY         Historical discovery lower bound; minimum 1949
   --to-year YYYY           Historical discovery upper bound
   --delay-ms N             Delay between historical queue items; default 1500
@@ -106,6 +115,7 @@ function parseArguments(argv) {
     else if (argument === '--historical-verify') options.historicalVerify = true;
     else if (argument === '--historical-evidence') options.historicalEvidence = true;
     else if (argument === '--historical-analyze') options.historicalAnalyze = true;
+    else if (argument === '--historical-cohort-audit') options.historicalCohortAudit = true;
     else if (argument === '--historical-release') options.historicalRelease = true;
     else if (argument === '--historical-status') options.historicalStatus = true;
     else if (argument === '--historical-audit') options.historicalAudit = true;
@@ -180,6 +190,7 @@ function parseArguments(argv) {
     Boolean(options.reconcileRelevance), Boolean(options.reconcileLineage),
     Boolean(options.historicalDiscover), Boolean(options.historicalProcess), Boolean(options.historicalPdfProcess),
     Boolean(options.historicalVerify), Boolean(options.historicalEvidence), Boolean(options.historicalAnalyze),
+    Boolean(options.historicalCohortAudit), Boolean(options.historicalCohortApprove),
     Boolean(options.historicalRelease), Boolean(options.historicalStatus),
     Boolean(options.historicalAudit),
     Boolean(options.historicalReview)
@@ -196,6 +207,12 @@ function parseArguments(argv) {
   if (options.backfillImages && !options.apply) options.dryRun = true;
   if (options.file && !options.sourceId && !options.issuer) {
     throw new Error('local files require --source or --issuer');
+  }
+  if (options.historicalCohortApprove && (!options.approvedBy || !options.approvalNote)) {
+    throw new Error('--historical-cohort-approve requires --approved-by and --approval-note');
+  }
+  if ((options.approvedBy || options.approvalNote) && !options.historicalCohortApprove) {
+    throw new Error('--approved-by and --approval-note are only valid with --historical-cohort-approve');
   }
   if (options.familySlug && !options.familyTitle) {
     // Existing families do not need a title; persistence validates only if creation is required.
@@ -247,6 +264,10 @@ async function main() {
         ? await runHistoricalEvidenceQueue(db, { ...options, notify: false })
       : options.historicalAnalyze
         ? await runHistoricalAnalysisQueue(db, { ...options, notify: false })
+      : options.historicalCohortAudit
+        ? auditHistoricalCohort(db, options)
+      : options.historicalCohortApprove
+        ? approveHistoricalCohort(db, options)
       : options.historicalRelease
         ? await runHistoricalReleaseQueue(db, { ...options, notify: false })
       : options.historicalStatus

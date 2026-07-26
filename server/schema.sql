@@ -406,6 +406,125 @@ BEGIN
   SELECT RAISE(ABORT, 'historical analysis versions are immutable; deletion is not allowed');
 END;
 
+CREATE TABLE IF NOT EXISTS historical_release_cohorts (
+  id INTEGER PRIMARY KEY,
+  target_size INTEGER NOT NULL DEFAULT 100 CHECK (target_size BETWEEN 1 AND 100),
+  status TEXT NOT NULL DEFAULT 'validated' CHECK (status IN ('validated', 'approved', 'observing', 'rejected')),
+  manifest_checksum TEXT NOT NULL CHECK (length(manifest_checksum) = 64),
+  regression_json TEXT NOT NULL CHECK (json_valid(regression_json) AND json_type(regression_json) = 'object'),
+  approved_by TEXT NOT NULL DEFAULT '',
+  approval_note TEXT NOT NULL DEFAULT '',
+  approved_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS historical_release_cohort_items (
+  cohort_id INTEGER NOT NULL REFERENCES historical_release_cohorts(id) ON DELETE RESTRICT,
+  ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE RESTRICT,
+  assessment_version_id INTEGER NOT NULL REFERENCES historical_analysis_versions(id) ON DELETE RESTRICT,
+  input_checksum TEXT NOT NULL CHECK (length(input_checksum) = 64),
+  regression_json TEXT NOT NULL CHECK (json_valid(regression_json) AND json_type(regression_json) = 'object'),
+  PRIMARY KEY (cohort_id, ordinal),
+  UNIQUE (cohort_id, item_id),
+  UNIQUE (item_id, assessment_version_id)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_cohort_items_item
+ON historical_release_cohort_items(item_id, cohort_id);
+
+CREATE TABLE IF NOT EXISTS historical_release_control (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  mode TEXT NOT NULL DEFAULT 'disabled' CHECK (mode IN ('disabled', 'cohort', 'full')),
+  active_cohort_id INTEGER REFERENCES historical_release_cohorts(id) ON DELETE RESTRICT,
+  changed_by TEXT NOT NULL DEFAULT 'schema-default',
+  change_note TEXT NOT NULL DEFAULT 'historical release remains disabled until cohort approval',
+  changed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+INSERT INTO historical_release_control(id, mode) VALUES (1, 'disabled')
+ON CONFLICT(id) DO NOTHING;
+
+CREATE TRIGGER IF NOT EXISTS historical_release_cohorts_insert_guard
+BEFORE INSERT ON historical_release_cohorts
+WHEN NEW.status <> 'validated' OR trim(NEW.approved_by) <> ''
+  OR trim(NEW.approval_note) <> '' OR NEW.approved_at IS NOT NULL
+BEGIN
+  SELECT RAISE(ABORT, 'historical release cohorts must start validated and unapproved');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_release_cohort_items_immutable_update
+BEFORE UPDATE ON historical_release_cohort_items
+BEGIN
+  SELECT RAISE(ABORT, 'historical release cohort items are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_release_cohort_items_immutable_delete
+BEFORE DELETE ON historical_release_cohort_items
+BEGIN
+  SELECT RAISE(ABORT, 'historical release cohort items cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_release_cohorts_update_guard
+BEFORE UPDATE ON historical_release_cohorts
+WHEN NEW.target_size <> OLD.target_size
+  OR NEW.manifest_checksum <> OLD.manifest_checksum
+  OR NEW.regression_json <> OLD.regression_json
+  OR NEW.created_at <> OLD.created_at
+  OR NOT (
+    (OLD.status = 'validated' AND NEW.status IN ('approved', 'rejected'))
+    OR (OLD.status = 'approved' AND NEW.status = 'observing')
+  )
+  OR (NEW.status = 'approved' AND (
+    json_extract(NEW.regression_json, '$.passed') IS NOT 1
+    OR (SELECT count(*) FROM historical_release_cohort_items item WHERE item.cohort_id = NEW.id) <> NEW.target_size
+    OR EXISTS (
+      SELECT 1 FROM historical_release_cohort_items item
+      WHERE item.cohort_id = NEW.id
+        AND json_extract(item.regression_json, '$.passed') IS NOT 1
+    )
+  ))
+BEGIN
+  SELECT RAISE(ABORT, 'invalid historical release cohort transition');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_release_cohorts_delete_guard
+BEFORE DELETE ON historical_release_cohorts
+BEGIN
+  SELECT RAISE(ABORT, 'historical release cohorts cannot be deleted');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_release_control_update_guard
+BEFORE UPDATE ON historical_release_control
+BEGIN
+  SELECT CASE WHEN
+    NEW.id <> 1
+    OR (NEW.mode = 'cohort' AND NOT EXISTS (
+      SELECT 1 FROM historical_release_cohorts cohort
+      WHERE cohort.id = NEW.active_cohort_id AND cohort.status = 'approved'
+        AND trim(cohort.approved_by) <> '' AND trim(cohort.approval_note) <> ''
+        AND cohort.approved_at IS NOT NULL
+        AND (SELECT count(*) FROM historical_release_cohort_items item WHERE item.cohort_id = cohort.id) = cohort.target_size
+    ))
+    OR (NEW.mode = 'full' AND NOT EXISTS (
+      SELECT 1 FROM historical_release_cohorts cohort
+      WHERE cohort.id = NEW.active_cohort_id AND cohort.status = 'observing'
+        AND (SELECT count(*) FROM historical_release_cohort_items item WHERE item.cohort_id = cohort.id) = cohort.target_size
+        AND (SELECT count(*) FROM historical_release_cohort_items item
+          JOIN historical_public_releases release
+            ON release.item_id = item.item_id AND release.assessment_version_id = item.assessment_version_id
+          WHERE item.cohort_id = cohort.id) = cohort.target_size
+    ))
+    OR (OLD.mode = 'full' AND NEW.mode <> 'full')
+  THEN RAISE(ABORT, 'invalid historical release control transition') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_release_control_delete_guard
+BEFORE DELETE ON historical_release_control
+BEGIN
+  SELECT RAISE(ABORT, 'historical release control cannot be deleted');
+END;
+
 CREATE TABLE IF NOT EXISTS historical_public_releases (
   id INTEGER PRIMARY KEY,
   item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE RESTRICT,
@@ -435,6 +554,7 @@ BEGIN
     JOIN documents document ON document.id = NEW.document_id
     JOIN analysis_versions analysis ON analysis.id = NEW.analysis_version_id
       AND analysis.document_id = document.id AND analysis.status = 'published'
+    JOIN historical_release_control control ON control.id = 1
     WHERE item.id = NEW.item_id
       AND item.stage = 'ready' AND item.analysis_status = 'verified'
       AND (item.source_url LIKE 'https://gov.cn/%' OR item.source_url GLOB 'https://*.gov.cn/*')
@@ -489,6 +609,18 @@ BEGIN
       AND analysis.evidence_summary = json_extract(assessment.analysis_json, '$.summary')
       AND analysis.model_name = assessment.methodology
       AND analysis.prompt_version = 'historical-release-v1'
+      AND (
+        control.mode = 'full'
+        OR (control.mode = 'cohort' AND EXISTS (
+          SELECT 1
+          FROM historical_release_cohorts cohort
+          JOIN historical_release_cohort_items cohort_item ON cohort_item.cohort_id = cohort.id
+          WHERE cohort.id = control.active_cohort_id AND cohort.status = 'approved'
+            AND cohort_item.item_id = item.id
+            AND cohort_item.assessment_version_id = assessment.id
+            AND cohort_item.input_checksum = assessment.input_checksum
+        ))
+      )
       AND NOT EXISTS (
         SELECT 1
         FROM historical_policy_evidence evidence
@@ -654,5 +786,5 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '9')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '10')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

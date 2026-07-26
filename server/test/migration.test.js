@@ -25,7 +25,17 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         DROP TRIGGER IF EXISTS historical_public_releases_immutable_delete;
         DROP TRIGGER IF EXISTS historical_analysis_versions_immutable_update;
         DROP TRIGGER IF EXISTS historical_analysis_versions_immutable_delete;
+        DROP TRIGGER IF EXISTS historical_release_control_delete_guard;
+        DROP TRIGGER IF EXISTS historical_release_control_update_guard;
+        DROP TRIGGER IF EXISTS historical_release_cohorts_delete_guard;
+        DROP TRIGGER IF EXISTS historical_release_cohorts_update_guard;
+        DROP TRIGGER IF EXISTS historical_release_cohorts_insert_guard;
+        DROP TRIGGER IF EXISTS historical_release_cohort_items_immutable_delete;
+        DROP TRIGGER IF EXISTS historical_release_cohort_items_immutable_update;
         DROP TABLE historical_public_releases;
+        DROP TABLE historical_release_control;
+        DROP TABLE historical_release_cohort_items;
+        DROP TABLE historical_release_cohorts;
         DROP TABLE historical_analysis_versions;
         DROP TABLE historical_evidence_searches;
         DROP TABLE historical_policy_evidence;
@@ -48,7 +58,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
 
     const upgraded = openDatabase(filename);
     try {
-      assert.equal(getSchemaVersion(upgraded), '9');
+      assert.equal(getSchemaVersion(upgraded), '10');
       const tables = new Set(upgraded.prepare(`
         SELECT name FROM sqlite_schema WHERE type = 'table'
       `).all().map((row) => row.name));
@@ -57,6 +67,9 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         'historical_verification_evidence',
         'historical_policy_evidence',
         'historical_analysis_versions',
+        'historical_release_cohorts',
+        'historical_release_cohort_items',
+        'historical_release_control',
         'historical_public_releases'
       ]) assert.ok(tables.has(name), `missing upgraded table ${name}`);
       const guard = upgraded.prepare(`
@@ -71,6 +84,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
       `).get().sql;
       assert.match(releaseGuard, /historical-evidence-gates-v2/);
       assert.match(releaseGuard, /policy_signals/);
+      assert.match(releaseGuard, /historical_release_control/);
       assert.doesNotMatch(releaseGuard, /historical-evidence-gates-v1/);
       const itemId = Number(upgraded.prepare(`
         INSERT INTO historical_backfill_items (

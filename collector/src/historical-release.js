@@ -312,6 +312,43 @@ function requeueStaleAssessment(db, item, message) {
   `).run(message, item.id);
 }
 
+function releaseControl(db) {
+  return db.prepare(`
+    SELECT control.*, cohort.status AS cohort_status, cohort.target_size
+    FROM historical_release_control control
+    LEFT JOIN historical_release_cohorts cohort ON cohort.id = control.active_cohort_id
+    WHERE control.id = 1
+  `).get();
+}
+
+function advanceCohortObservation(db) {
+  const control = releaseControl(db);
+  if (control.mode !== 'cohort' || !control.active_cohort_id) return control.cohort_status || null;
+  const remaining = Number(db.prepare(`
+    SELECT count(*) AS count
+    FROM historical_release_cohort_items cohort_item
+    WHERE cohort_item.cohort_id = ?
+      AND NOT EXISTS (
+        SELECT 1 FROM historical_public_releases release
+        WHERE release.item_id = cohort_item.item_id
+          AND release.assessment_version_id = cohort_item.assessment_version_id
+      )
+  `).get(control.active_cohort_id).count);
+  if (remaining > 0) return 'approved';
+  db.prepare(`
+    UPDATE historical_release_cohorts SET status = 'observing'
+    WHERE id = ? AND status = 'approved'
+  `).run(control.active_cohort_id);
+  db.prepare(`
+    UPDATE historical_release_control SET
+      mode = 'disabled', changed_by = 'historical-release-v1',
+      change_note = 'first cohort released; full rollout remains disabled during observation',
+      changed_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE id = 1
+  `).run();
+  return 'observing';
+}
+
 function releaseHistoricalItem(db, item) {
   db.exec('BEGIN IMMEDIATE');
   try {
@@ -349,6 +386,7 @@ function releaseHistoricalItem(db, item) {
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
     `).run(document.documentId, item.id);
+    const cohortStatus = advanceCohortObservation(db);
     db.exec('COMMIT');
     return {
       itemId: item.id,
@@ -359,7 +397,8 @@ function releaseHistoricalItem(db, item) {
       reviewStatus: analysis.reviewStatus,
       signals,
       ambiguities,
-      events: lineage.events
+      events: lineage.events,
+      cohortStatus
     };
   } catch (error) {
     db.exec('ROLLBACK');
@@ -370,11 +409,24 @@ function releaseHistoricalItem(db, item) {
 
 function releaseQueueItems(db, maximum) {
   return db.prepare(`
-    SELECT * FROM historical_backfill_items
-    WHERE item_kind = 'document' AND stage = 'ready' AND analysis_status = 'verified'
-      AND document_id IS NULL
-      AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    ORDER BY coalesce(source_year, 9999), id
+    SELECT item.*
+    FROM historical_backfill_items item
+    JOIN historical_release_control control ON control.id = 1
+    WHERE item.item_kind = 'document' AND item.stage = 'ready' AND item.analysis_status = 'verified'
+      AND item.document_id IS NULL
+      AND (item.next_attempt_at IS NULL OR item.next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      AND (
+        control.mode = 'full'
+        OR (control.mode = 'cohort' AND EXISTS (
+          SELECT 1
+          FROM historical_release_cohorts cohort
+          JOIN historical_release_cohort_items cohort_item ON cohort_item.cohort_id = cohort.id
+          WHERE cohort.id = control.active_cohort_id AND cohort.status = 'approved'
+            AND cohort_item.item_id = item.id
+            AND cohort_item.assessment_version_id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
+        ))
+      )
+    ORDER BY coalesce(item.source_year, 9999), item.id
     LIMIT ?
   `).all(maximum);
 }
@@ -397,10 +449,17 @@ async function runHistoricalReleaseQueue(db, options = {}, dependencies = {}) {
   const initialLoad = readLoad();
   const capacity = options.adaptiveLoad ? adaptiveBatchSize(maximum, minimum, initialLoad) : maximum;
   const items = releaseQueueItems(db, maximum);
+  const control = releaseControl(db);
+  const heldReady = Number(db.prepare(`
+    SELECT count(*) AS count FROM historical_backfill_items
+    WHERE item_kind = 'document' AND stage = 'ready' AND analysis_status = 'verified'
+      AND document_id IS NULL
+  `).get().count) - items.length;
   const result = {
     status: 'succeeded', selected: items.length, planned: Math.min(items.length, capacity),
     processed: 0, published: 0, requeued: 0,
     adaptiveLoad: Boolean(options.adaptiveLoad), load: initialLoad, stoppedDueToLoad: false,
+    rollout: control, heldReady: Math.max(0, heldReady),
     items: [], errors: []
   };
   for (let index = 0; index < items.length; index += 1) {
@@ -441,6 +500,7 @@ async function runHistoricalReleaseQueue(db, options = {}, dependencies = {}) {
 module.exports = {
   currentAssessment,
   publicDocumentStatus,
+  releaseControl,
   releaseHistoricalItem,
   runHistoricalReleaseQueue
 };

@@ -584,6 +584,20 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
     + Number(releaseIntegrity.assessment_link_violations)
     + Number(releaseIntegrity.public_release_violations)
     + Number(publicDocumentMismatches);
+  const rollout = db.prepare(`
+    SELECT control.mode, control.active_cohort_id, control.changed_by,
+      control.change_note, control.changed_at, cohort.status AS cohort_status,
+      cohort.target_size, cohort.manifest_checksum,
+      (SELECT count(*) FROM historical_release_cohort_items item
+        WHERE item.cohort_id = cohort.id) AS cohort_items,
+      (SELECT count(*) FROM historical_release_cohort_items item
+        JOIN historical_public_releases release
+          ON release.item_id = item.item_id AND release.assessment_version_id = item.assessment_version_id
+        WHERE item.cohort_id = cohort.id) AS cohort_released
+    FROM historical_release_control control
+    LEFT JOIN historical_release_cohorts cohort ON cohort.id = control.active_cohort_id
+    WHERE control.id = 1
+  `).get();
 
   return {
     status: criticalIntegrityFailures ? 'failed' : 'succeeded',
@@ -609,6 +623,18 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
       earliestYear: coverage.earliest_year === null ? null : Number(coverage.earliest_year),
       latestYear: coverage.latest_year === null ? null : Number(coverage.latest_year),
       yearsRepresented: Number(coverage.years_represented)
+    },
+    rollout: {
+      mode: rollout.mode,
+      activeCohortId: rollout.active_cohort_id == null ? null : Number(rollout.active_cohort_id),
+      cohortStatus: rollout.cohort_status || null,
+      targetSize: rollout.target_size == null ? null : Number(rollout.target_size),
+      cohortItems: Number(rollout.cohort_items || 0),
+      cohortReleased: Number(rollout.cohort_released || 0),
+      manifestChecksum: rollout.manifest_checksum || '',
+      changedBy: rollout.changed_by,
+      changeNote: rollout.change_note,
+      changedAt: rollout.changed_at
     },
     integrity: {
       missingSourceYear: Number(integrity.missing_source_year),

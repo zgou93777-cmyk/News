@@ -122,6 +122,28 @@ function createReadyItem(db, suffix = '21') {
       reviewed_at = '2026-07-26T12:00:00+08:00'
     WHERE id = ?
   `).run(JSON.stringify({ ...analysis, assessmentVersionId: assessmentId, assessmentVersion: 1 }), itemId);
+  const cohortId = Number(db.prepare(`
+    INSERT INTO historical_release_cohorts (
+      target_size, status, manifest_checksum, regression_json
+    ) VALUES (1, 'validated', ?, '{"passed":true}')
+  `).run(checksum(`${itemId}:${assessmentId}:${fingerprint}`)).lastInsertRowid);
+  db.prepare(`
+    INSERT INTO historical_release_cohort_items (
+      cohort_id, ordinal, item_id, assessment_version_id, input_checksum, regression_json
+    ) VALUES (?, 1, ?, ?, ?, '{"passed":true}')
+  `).run(cohortId, itemId, assessmentId, fingerprint);
+  db.prepare(`
+    UPDATE historical_release_cohorts SET
+      status = 'approved', approved_by = 'release-test', approval_note = 'fixture approval',
+      approved_at = '2026-07-26T12:00:00+08:00'
+    WHERE id = ?
+  `).run(cohortId);
+  db.prepare(`
+    UPDATE historical_release_control SET
+      mode = 'cohort', active_cohort_id = ?, changed_by = 'release-test',
+      change_note = 'fixture approval'
+    WHERE id = 1
+  `).run(cohortId);
   return itemId;
 }
 

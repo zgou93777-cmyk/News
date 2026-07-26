@@ -67,6 +67,12 @@ node src/cli.js --historical-evidence --adaptive-load --min-items 5 --max-items 
 # 对已闭合的证据链执行四状态分类和置信度门槛；通过后只进入私有 ready
 node src/cli.js --historical-analyze --adaptive-load --min-items 5 --max-items 100
 
+# 满100条后执行资格、引用和负载回归；不足100条只报告等待
+node src/cli.js --historical-cohort-audit --max-items 100
+
+# 审阅回归报告后显式批准，批准前发布控制始终为 disabled
+node src/cli.js --historical-cohort-approve 1 --approved-by reviewer-id --approval-note "100-row regression approved"
+
 # 仅发布通过全部数据库守卫的私有 ready 条目；历史回填默认不发送逐条通知
 node src/cli.js --historical-release --adaptive-load --min-items 5 --max-items 100
 

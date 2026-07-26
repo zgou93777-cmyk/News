@@ -40,10 +40,11 @@ test('health and categories expose database state', async () => {
   assert.equal(healthResponse.headers.get('x-content-type-options'), 'nosniff');
   const health = await healthResponse.json();
   assert.equal(health.status, 'ok');
-  assert.equal(health.schemaVersion, '9');
+  assert.equal(health.schemaVersion, '10');
   assert.equal(health.pushEnabled, true);
   assert.deepEqual(health.historical.byStage, {});
   assert.equal(health.historical.integrityOk, true);
+  assert.equal(health.historical.rollout.mode, 'disabled');
 
   const categories = await (await fetch(`${origin}/api/categories`)).json();
   assert.deepEqual(categories.data.map((item) => item.name), ['消费与内需']);
