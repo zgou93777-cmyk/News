@@ -32,8 +32,9 @@ reported by `tesseract --list-langs`.
    enough Chinese source text to be useful.
 4. OCR at 300 DPI with automatic page layout (`--psm 3`) and the LSTM engine
    (`--oem 1`), at most the configured page budget. Each page is written atomically
-   and recorded as an `ocr_page` artifact. Production processes at most two pages
-   concurrently; the systemd unit retains a 150% CPU quota and 768 MiB memory cap.
+   and recorded as an `ocr_page` artifact. The worker supports at most two pages
+   concurrently, but the current two-core production host pins concurrency to one
+   after load acceptance and retains a 150% CPU quota and 512 MiB memory cap.
 5. Combine complete page text, retain form-feed page boundaries, and record either
    an `embedded_text` or `ocr_text` artifact.
 6. Split an issue on conservative policy-title headings. Record page ranges and
@@ -58,7 +59,7 @@ node collector/src/cli.js --historical-pdf-process \
   --adaptive-load --min-items 1 --max-items 5 \
   --ocr-page-budget 20 --ocr-languages chi_sim+chi_tra+eng \
   --ocr-dpi 300 --ocr-psm 3 --ocr-oem 1 \
-  --ocr-page-concurrency 2 --delay-ms 5000
+  --ocr-page-concurrency 1 --delay-ms 5000
 ```
 
 The historical systemd service runs discovery, HTML routing, and PDF processing in

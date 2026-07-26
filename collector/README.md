@@ -56,7 +56,7 @@ node src/cli.js --historical-discover --from-year 1949 --max-items 100
 node src/cli.js --historical-process --adaptive-load --min-items 5 --max-items 100 --delay-ms 5000
 
 # 处理私有 PDF 队列；优先内嵌文本，必要时每份最多新增 OCR 20 页并保存断点
-node src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --ocr-languages chi_sim+chi_tra+eng --ocr-dpi 300 --ocr-psm 3 --ocr-oem 1 --ocr-page-concurrency 2 --delay-ms 5000
+node src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --ocr-languages chi_sim+chi_tra+eng --ocr-dpi 300 --ocr-psm 3 --ocr-oem 1 --ocr-page-concurrency 1 --delay-ms 5000
 
 # 核验机关、文号、发布日期、施行日期以及后续官方废止/替代关系
 node src/cli.js --historical-verify --adaptive-load --min-items 5 --max-items 100
