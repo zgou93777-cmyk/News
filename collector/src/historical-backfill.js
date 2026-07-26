@@ -393,11 +393,134 @@ function historicalQueueStats(db) {
   return Object.fromEntries(rows.map((row) => [row.stage, Number(row.count)]));
 }
 
+function historicalQueueAudit(db, options = {}, dependencies = {}) {
+  const maximum = options.maxItems || 100;
+  const minimum = Math.min(maximum, options.minItems || 5);
+  const snapshot = (dependencies.loadSnapshot || currentLoadSnapshot)();
+  const byStage = historicalQueueStats(db);
+  const total = Object.values(byStage).reduce((sum, count) => sum + count, 0);
+  const recovery = db.prepare(`
+    SELECT
+      count(*) FILTER (
+        WHERE stage = 'discovered'
+          OR (stage = 'failed' AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now')))
+      ) AS processable_now,
+      count(*) FILTER (
+        WHERE stage = 'failed' AND next_attempt_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      ) AS scheduled_retry,
+      count(*) FILTER (WHERE stage = 'manual_review' AND source_type = 'pdf') AS awaiting_pdf_ocr,
+      count(*) FILTER (WHERE stage IN ('needs_review', 'source_verified', 'lifecycle_verified')) AS awaiting_verification,
+      count(*) FILTER (WHERE stage = 'indexed') AS indexed_containers,
+      count(*) FILTER (WHERE stage = 'ready') AS ready_for_release,
+      count(*) FILTER (WHERE stage = 'published') AS published
+    FROM historical_backfill_items
+  `).get();
+  const retry = db.prepare(`
+    SELECT
+      count(*) AS failed,
+      coalesce(max(attempts), 0) AS max_attempts,
+      min(next_attempt_at) FILTER (WHERE next_attempt_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')) AS next_attempt_at
+    FROM historical_backfill_items
+    WHERE stage = 'failed'
+  `).get();
+  const topErrors = db.prepare(`
+    SELECT last_error AS message, count(*) AS count
+    FROM historical_backfill_items
+    WHERE stage = 'failed' AND trim(last_error) <> ''
+    GROUP BY last_error
+    ORDER BY count(*) DESC, last_error
+    LIMIT 5
+  `).all();
+  const coverage = db.prepare(`
+    SELECT min(source_year) AS earliest_year, max(source_year) AS latest_year,
+      count(DISTINCT source_year) AS years_represented
+    FROM historical_backfill_items
+    WHERE source_year IS NOT NULL
+  `).get();
+  const integrity = db.prepare(`
+    SELECT
+      count(*) FILTER (WHERE source_year IS NULL) AS missing_source_year,
+      count(*) FILTER (
+        WHERE item_kind = 'document'
+          AND stage NOT IN ('discovered', 'failed')
+          AND (trim(title) = '' OR trim(issuer) = '' OR published_at IS NULL)
+      ) AS documents_missing_metadata,
+      count(*) FILTER (
+        WHERE stage IN ('ready', 'published') AND (
+          item_kind <> 'document'
+          OR source_status <> 'verified'
+          OR metadata_status <> 'verified'
+          OR lifecycle_status NOT IN ('verified', 'not_applicable')
+          OR implementation_status NOT IN ('verified', 'not_found', 'not_applicable')
+          OR outcome_status NOT IN ('verified', 'not_found', 'not_applicable')
+          OR analysis_status <> 'verified'
+          OR trim(title) = '' OR trim(issuer) = '' OR published_at IS NULL
+          OR trim(content_text) = '' OR trim(checksum) = ''
+          OR json_array_length(evidence_urls_json) = 0
+          OR trim(review_notes) = '' OR trim(reviewed_by) = '' OR reviewed_at IS NULL
+          OR (stage = 'published' AND document_id IS NULL)
+        )
+      ) AS release_guard_violations,
+      count(*) FILTER (
+        WHERE (stage = 'published' AND document_id IS NULL)
+          OR (stage <> 'published' AND document_id IS NOT NULL)
+      ) AS document_link_violations
+    FROM historical_backfill_items
+  `).get();
+  const orphanedParents = db.prepare(`
+    SELECT count(*) AS count
+    FROM historical_backfill_items child
+    LEFT JOIN historical_backfill_items parent ON parent.id = child.parent_id
+    WHERE child.parent_id IS NOT NULL AND parent.id IS NULL
+  `).get().count;
+
+  return {
+    status: 'succeeded',
+    generatedAt: new Date().toISOString(),
+    total,
+    byStage,
+    recovery: {
+      processableNow: Number(recovery.processable_now),
+      scheduledRetry: Number(recovery.scheduled_retry),
+      awaitingPdfOcr: Number(recovery.awaiting_pdf_ocr),
+      awaitingVerification: Number(recovery.awaiting_verification),
+      indexedContainers: Number(recovery.indexed_containers),
+      readyForRelease: Number(recovery.ready_for_release),
+      published: Number(recovery.published)
+    },
+    retry: {
+      failed: Number(retry.failed),
+      maxAttempts: Number(retry.max_attempts),
+      nextAttemptAt: retry.next_attempt_at || null,
+      topErrors: topErrors.map((row) => ({ message: row.message, count: Number(row.count) }))
+    },
+    coverage: {
+      earliestYear: coverage.earliest_year === null ? null : Number(coverage.earliest_year),
+      latestYear: coverage.latest_year === null ? null : Number(coverage.latest_year),
+      yearsRepresented: Number(coverage.years_represented)
+    },
+    integrity: {
+      missingSourceYear: Number(integrity.missing_source_year),
+      documentsMissingMetadata: Number(integrity.documents_missing_metadata),
+      releaseGuardViolations: Number(integrity.release_guard_violations),
+      documentLinkViolations: Number(integrity.document_link_violations),
+      orphanedParents: Number(orphanedParents)
+    },
+    capacity: {
+      minimum,
+      maximum,
+      recommended: adaptiveBatchSize(maximum, minimum, snapshot),
+      load: snapshot
+    }
+  };
+}
+
 module.exports = {
   DEFAULT_CONFIG_PATH,
   canonicalOfficialUrl,
   discoverHistoricalLinks,
   enqueueHistoricalItem,
+  historicalQueueAudit,
   historicalQueueStats,
   adaptiveBatchSize,
   currentLoadSnapshot,

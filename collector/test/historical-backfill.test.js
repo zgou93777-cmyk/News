@@ -8,6 +8,7 @@ const {
   adaptiveBatchSize,
   discoverHistoricalLinks,
   enqueueHistoricalItem,
+  historicalQueueAudit,
   historicalQueueStats,
   runHistoricalDiscovery,
   runHistoricalQueue
@@ -246,6 +247,68 @@ test('adaptive history batches use capacity when idle and stop early under press
     assert.equal(result.processed, 2);
     assert.equal(result.stoppedDueToLoad, true);
     assert.deepEqual(historicalQueueStats(db), { discovered: 3, manual_review: 2 });
+  } finally {
+    db.close();
+  }
+});
+
+test('historical audit exposes recoverable work, blocked stages and integrity risks', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const ids = [];
+    for (const [index, sourceType, itemKind, sourceYear] of [
+      [1, 'html', 'document', 1954],
+      [2, 'html', 'document', 1955],
+      [3, 'html', 'document', 1956],
+      [4, 'pdf', 'issue', 1957],
+      [5, 'html', 'document', 2000]
+    ]) {
+      enqueueHistoricalItem(db, {
+        url: `https://www.gov.cn/history/audit-${index}.${sourceType === 'pdf' ? 'pdf' : 'htm'}`,
+        sourceName: 'Official archive',
+        sourceType,
+        itemKind,
+        sourceYear,
+        title: index === 5 ? '' : `Policy ${index}`
+      });
+      ids.push(db.prepare('SELECT last_insert_rowid() AS id').get().id);
+    }
+    db.prepare(`UPDATE historical_backfill_items SET stage = 'failed', attempts = 2, last_error = 'timeout' WHERE id = ?`).run(ids[1]);
+    db.prepare(`
+      UPDATE historical_backfill_items
+      SET stage = 'failed', attempts = 4, last_error = 'timeout', next_attempt_at = datetime('now', '+1 day')
+      WHERE id = ?
+    `).run(ids[2]);
+    db.prepare(`UPDATE historical_backfill_items SET stage = 'manual_review' WHERE id = ?`).run(ids[3]);
+    db.prepare(`UPDATE historical_backfill_items SET stage = 'needs_review' WHERE id = ?`).run(ids[4]);
+
+    const audit = historicalQueueAudit(db, { minItems: 5, maxItems: 100 }, {
+      loadSnapshot: () => ({ cpuCount: 2, load1: 1, normalizedLoad: 0.5, freeMemoryRatio: 0.4 })
+    });
+    assert.equal(audit.status, 'succeeded');
+    assert.equal(audit.total, 5);
+    assert.deepEqual(audit.byStage, { discovered: 1, failed: 2, manual_review: 1, needs_review: 1 });
+    assert.deepEqual(audit.recovery, {
+      processableNow: 2,
+      scheduledRetry: 1,
+      awaitingPdfOcr: 1,
+      awaitingVerification: 1,
+      indexedContainers: 0,
+      readyForRelease: 0,
+      published: 0
+    });
+    assert.equal(audit.retry.failed, 2);
+    assert.equal(audit.retry.maxAttempts, 4);
+    assert.deepEqual(audit.retry.topErrors, [{ message: 'timeout', count: 2 }]);
+    assert.deepEqual(audit.coverage, { earliestYear: 1954, latestYear: 2000, yearsRepresented: 5 });
+    assert.deepEqual(audit.integrity, {
+      missingSourceYear: 0,
+      documentsMissingMetadata: 1,
+      releaseGuardViolations: 0,
+      documentLinkViolations: 0,
+      orphanedParents: 0
+    });
+    assert.equal(audit.capacity.recommended, 50);
   } finally {
     db.close();
   }

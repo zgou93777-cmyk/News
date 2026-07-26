@@ -8,7 +8,12 @@ const { DatabaseSync } = require('node:sqlite');
 const { loadConfig } = require('../../server/src/config');
 const { openDatabase } = require('../../server/src/db');
 const { runCoverBackfill } = require('./cover-backfill');
-const { historicalQueueStats, runHistoricalDiscovery, runHistoricalQueue } = require('./historical-backfill');
+const {
+  historicalQueueAudit,
+  historicalQueueStats,
+  runHistoricalDiscovery,
+  runHistoricalQueue
+} = require('./historical-backfill');
 const { runHistoricalReview } = require('./historical-review');
 const { runCollection, runSeedBackfill } = require('./pipeline');
 const { runReconcileLineage } = require('./reconcile-lineage');
@@ -39,6 +44,7 @@ const HELP = `Usage:
   node src/cli.js --historical-discover [--from-year 1949] [--to-year YYYY] [--max-items 100]
   node src/cli.js --historical-process [--adaptive-load] [--min-items 5] [--max-items 100]
   node src/cli.js --historical-status
+  node src/cli.js --historical-audit
   node src/cli.js --historical-review <queue-id> --review-file <review.json> [--dry-run]
 
 Options:
@@ -56,6 +62,7 @@ Options:
   --historical-process     Slowly fetch/extract queued entries; never publishes them
   --adaptive-load          Recheck CPU and memory pressure between historical items
   --historical-status      Show private queue counts by stage
+  --historical-audit       Audit recovery boundaries, integrity and current capacity
   --historical-review ID   Validate a structured human review; moves only to private ready state
   --review-file PATH       Review evidence, policy cycle, implementation, outcome and analysis JSON
   --from-year YYYY         Historical discovery lower bound; minimum 1949
@@ -79,6 +86,7 @@ function parseArguments(argv) {
     else if (argument === '--historical-discover') options.historicalDiscover = true;
     else if (argument === '--historical-process') options.historicalProcess = true;
     else if (argument === '--historical-status') options.historicalStatus = true;
+    else if (argument === '--historical-audit') options.historicalAudit = true;
     else if (argument === '--adaptive-load') options.adaptiveLoad = true;
     else if (argument === '--apply') options.apply = true;
     else if (VALUE_OPTIONS.has(argument)) {
@@ -136,6 +144,7 @@ function parseArguments(argv) {
     Boolean(options.backfillSeed), Boolean(options.backfillImages),
     Boolean(options.reconcileRelevance), Boolean(options.reconcileLineage),
     Boolean(options.historicalDiscover), Boolean(options.historicalProcess), Boolean(options.historicalStatus),
+    Boolean(options.historicalAudit),
     Boolean(options.historicalReview)
   ].filter(Boolean).length;
   if (modes > 1) {
@@ -194,6 +203,8 @@ async function main() {
         ? await runHistoricalQueue(db, { ...options, notify: false })
       : options.historicalStatus
         ? { status: 'succeeded', queue: historicalQueueStats(db) }
+      : options.historicalAudit
+        ? historicalQueueAudit(db)
       : options.historicalReview
         ? runHistoricalReview(db, options)
       : options.reconcileRelevance

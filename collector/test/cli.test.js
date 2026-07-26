@@ -76,4 +76,9 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   assert.throws(() => parseArguments(['--historical-process', '--delay-ms', '60001']), /0 to 60000/);
   assert.throws(() => parseArguments(['--historical-process', '--min-items', '13', '--max-items', '12']), /cannot exceed/);
   assert.throws(() => parseArguments(['--adaptive-load']), /only valid/);
+  assert.equal(parseArguments(['--historical-audit']).historicalAudit, true);
+  assert.throws(
+    () => parseArguments(['--historical-audit', '--historical-status']),
+    /choose only one/
+  );
 });
