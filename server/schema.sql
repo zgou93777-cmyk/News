@@ -406,6 +406,48 @@ BEGIN
   SELECT RAISE(ABORT, 'historical analysis versions are immutable; deletion is not allowed');
 END;
 
+CREATE TABLE IF NOT EXISTS historical_review_submissions (
+  id INTEGER PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE RESTRICT,
+  assessment_version_id INTEGER NOT NULL UNIQUE REFERENCES historical_analysis_versions(id) ON DELETE RESTRICT,
+  source_checksum TEXT NOT NULL CHECK (length(source_checksum) = 64),
+  review_checksum TEXT NOT NULL CHECK (length(review_checksum) = 64),
+  review_json TEXT NOT NULL CHECK (json_valid(review_json) AND json_type(review_json) = 'object'),
+  reviewed_by TEXT NOT NULL CHECK (trim(reviewed_by) <> ''),
+  reviewed_at TEXT NOT NULL CHECK (trim(reviewed_at) <> ''),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE(item_id, review_checksum)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_review_submissions_item
+ON historical_review_submissions(item_id, assessment_version_id);
+
+CREATE TRIGGER IF NOT EXISTS historical_review_submissions_insert_guard
+BEFORE INSERT ON historical_review_submissions
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM historical_analysis_versions assessment
+    WHERE assessment.id = NEW.assessment_version_id
+      AND assessment.item_id = NEW.item_id
+      AND assessment.methodology = 'human-review-v1'
+      AND assessment.input_checksum = NEW.review_checksum
+  ) OR coalesce(json_extract(NEW.review_json, '$.reviewedBy'), '') <> NEW.reviewed_by
+    OR coalesce(json_extract(NEW.review_json, '$.reviewedAt'), '') <> NEW.reviewed_at
+  THEN RAISE(ABORT, 'historical review submission does not match its assessment') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_review_submissions_immutable_update
+BEFORE UPDATE ON historical_review_submissions
+BEGIN
+  SELECT RAISE(ABORT, 'historical review submissions are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_review_submissions_immutable_delete
+BEFORE DELETE ON historical_review_submissions
+BEGIN
+  SELECT RAISE(ABORT, 'historical review submissions are immutable');
+END;
+
 CREATE TABLE IF NOT EXISTS historical_release_cohorts (
   id INTEGER PRIMARY KEY,
   target_size INTEGER NOT NULL DEFAULT 100 CHECK (target_size BETWEEN 1 AND 100),
@@ -560,6 +602,18 @@ BEGIN
       AND (item.source_url LIKE 'https://gov.cn/%' OR item.source_url GLOB 'https://*.gov.cn/*')
       AND assessment.release_eligible = 1 AND assessment.confidence >= 0.95
       AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+      AND (
+        assessment.methodology <> 'human-review-v1'
+        OR EXISTS (
+          SELECT 1 FROM historical_review_submissions submission
+          WHERE submission.item_id = item.id
+            AND submission.assessment_version_id = assessment.id
+            AND submission.source_checksum = item.checksum
+            AND submission.review_checksum = assessment.input_checksum
+            AND submission.reviewed_by = item.reviewed_by
+            AND submission.reviewed_at = item.reviewed_at
+        )
+      )
       AND json_array_length(assessment.gates_json) > 0
       AND NOT EXISTS (
         SELECT 1 FROM json_each(assessment.gates_json) gate
@@ -694,6 +748,18 @@ BEGIN
         AND assessment.item_id = NEW.id AND assessment.release_eligible = 1
         AND assessment.confidence >= 0.95
         AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+        AND (
+          assessment.methodology <> 'human-review-v1'
+          OR EXISTS (
+            SELECT 1 FROM historical_review_submissions submission
+            WHERE submission.item_id = NEW.id
+              AND submission.assessment_version_id = assessment.id
+              AND submission.source_checksum = NEW.checksum
+              AND submission.review_checksum = assessment.input_checksum
+              AND submission.reviewed_by = NEW.reviewed_by
+              AND submission.reviewed_at = NEW.reviewed_at
+          )
+        )
         AND assessment.version = CAST(json_extract(NEW.analysis_json, '$.assessmentVersion') AS INTEGER)
         AND assessment.review_status = json_extract(NEW.analysis_json, '$.reviewStatus')
         AND assessment.confidence = CAST(json_extract(NEW.analysis_json, '$.confidence') AS REAL)
@@ -749,6 +815,18 @@ BEGIN
         AND assessment.item_id = NEW.id AND assessment.release_eligible = 1
         AND assessment.confidence >= 0.95
         AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+        AND (
+          assessment.methodology <> 'human-review-v1'
+          OR EXISTS (
+            SELECT 1 FROM historical_review_submissions submission
+            WHERE submission.item_id = NEW.id
+              AND submission.assessment_version_id = assessment.id
+              AND submission.source_checksum = NEW.checksum
+              AND submission.review_checksum = assessment.input_checksum
+              AND submission.reviewed_by = NEW.reviewed_by
+              AND submission.reviewed_at = NEW.reviewed_at
+          )
+        )
         AND assessment.version = CAST(json_extract(NEW.analysis_json, '$.assessmentVersion') AS INTEGER)
         AND assessment.review_status = json_extract(NEW.analysis_json, '$.reviewStatus')
         AND assessment.confidence = CAST(json_extract(NEW.analysis_json, '$.confidence') AS REAL)
@@ -793,5 +871,5 @@ SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at)
 WHERE next_attempt_at GLOB '????-??-?? ??:??:??*'
   AND strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at) IS NOT NULL;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '11')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '12')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

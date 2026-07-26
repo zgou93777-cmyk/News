@@ -1,6 +1,6 @@
 # Historical First-Cohort Rollout
 
-Historical release is controlled by a Schema 10 singleton state. Its default mode
+Historical release is controlled by a Schema 12 singleton state. Its default mode
 is `disabled`; a `ready` assessment is therefore necessary but never sufficient to
 publish an article.
 
@@ -17,6 +17,7 @@ Until exactly 100 private `ready` policies exist, it reports
 each item to its immutable assessment version and rechecks:
 
 - approved methodology, four-status value, all release gates, and confidence >= 0.95;
+- an immutable normalized review submission for every `human-review-v1` assessment;
 - current official source URL and source-text checksum;
 - every structured citation and verbatim quote;
 - both complete corpus search scopes for automated assessments;

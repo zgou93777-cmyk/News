@@ -545,6 +545,18 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
             AND assessment.item_id = item.id AND assessment.release_eligible = 1
             AND assessment.confidence >= 0.95
             AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+            AND (
+              assessment.methodology <> 'human-review-v1'
+              OR EXISTS (
+                SELECT 1 FROM historical_review_submissions submission
+                WHERE submission.item_id = item.id
+                  AND submission.assessment_version_id = assessment.id
+                  AND submission.source_checksum = item.checksum
+                  AND submission.review_checksum = assessment.input_checksum
+                  AND submission.reviewed_by = item.reviewed_by
+                  AND submission.reviewed_at = item.reviewed_at
+              )
+            )
             AND assessment.version = CAST(json_extract(item.analysis_json, '$.assessmentVersion') AS INTEGER)
             AND assessment.review_status = json_extract(item.analysis_json, '$.reviewStatus')
             AND assessment.confidence = CAST(json_extract(item.analysis_json, '$.confidence') AS REAL)

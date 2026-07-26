@@ -23,7 +23,7 @@ that push. Historical rows remain private until every later release gate passes.
 - Discovery, OCR, verification, analysis, and evidence search do not publish.
 - The full queue is not opened merely because a timer is healthy; the first 100
   release-eligible rows must pass the regression and observation gate.
-- Schema 10 keeps release mode `disabled` until a complete 100-row manifest passes
+- Schema 12 keeps release mode `disabled` until a complete 100-row manifest passes
   evidence and load regression and receives an explicit recorded approval.
 - Production failures retain the database and application backup for that release
   and must be resolved in a new GitHub commit before deployment is retried.

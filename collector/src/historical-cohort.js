@@ -50,6 +50,19 @@ function regressionEntry(db, item, ordinal) {
   const automaticScopesPass = assessment.methodology !== 'historical-evidence-gates-v2'
     || (searchScopes.length === 2 && searchScopes.every((scope) => scope.status === 'complete'
       && scope.searchScope && Number(scope.corpusWatermark) >= 0));
+  const humanReviewPass = assessment.methodology !== 'human-review-v1' || Boolean(db.prepare(`
+    SELECT 1 FROM historical_review_submissions submission
+    WHERE submission.item_id = ? AND submission.assessment_version_id = ?
+      AND submission.source_checksum = ? AND submission.review_checksum = ?
+      AND submission.reviewed_by = ? AND submission.reviewed_at = ?
+  `).get(
+    item.id,
+    assessment.id,
+    item.checksum,
+    assessment.input_checksum,
+    item.reviewed_by,
+    item.reviewed_at
+  ));
   const checks = {
     reviewStatus: REVIEW_STATUSES.has(assessment.review_status),
     confidence: Number(assessment.confidence) >= MINIMUM_CONFIDENCE,
@@ -57,6 +70,7 @@ function regressionEntry(db, item, ordinal) {
     citations: citations.length > 0 && citations.every(officialCitation),
     evidenceQuotes: Array.isArray(analysis.evidenceQuotes) && analysis.evidenceQuotes.length > 0,
     searchScopes: automaticScopesPass,
+    reviewSubmission: humanReviewPass,
     privateDocument: item.document_id === null && item.stage === 'ready'
   };
   return {

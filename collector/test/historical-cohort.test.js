@@ -50,6 +50,18 @@ function createHumanReadyItem(db, suffix) {
     ) VALUES (?, 1, ?, 'watching', 0.95, 1, ?, ?, 'human-review-v1')
   `).run(itemId, inputChecksum, JSON.stringify(gates), JSON.stringify(analysis)).lastInsertRowid);
   db.prepare(`
+    INSERT INTO historical_review_submissions (
+      item_id, assessment_version_id, source_checksum, review_checksum,
+      review_json, reviewed_by, reviewed_at
+    ) VALUES (?, ?, ?, ?, ?, 'reviewer-1', '2026-07-26T12:00:00+08:00')
+  `).run(
+    itemId,
+    assessmentId,
+    checksum(content),
+    inputChecksum,
+    JSON.stringify({ reviewedBy: 'reviewer-1', reviewedAt: '2026-07-26T12:00:00+08:00' })
+  );
+  db.prepare(`
     UPDATE historical_backfill_items SET
       stage = 'ready', analysis_status = 'verified', analysis_json = ?,
       review_notes = 'cohort regression fixture', reviewed_by = 'reviewer-1',

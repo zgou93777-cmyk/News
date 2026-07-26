@@ -48,6 +48,10 @@ scopes; quotes are not truncated to a display-only sample.
 Passing an assessment changes the private queue item to `ready`. Failing an
 assessment leaves it private and records the failed gate names. Every distinct
 input fingerprint creates an immutable row in `historical_analysis_versions`.
+Manual assessments additionally retain the complete normalized review JSON, source
+checksum, reviewer identity, review time, and assessment mapping in the immutable
+`historical_review_submissions` table. Database, cohort, and public release guards
+all require that mapping to remain exact.
 
 ```bash
 node collector/src/cli.js --historical-analyze \

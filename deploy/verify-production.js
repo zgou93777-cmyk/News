@@ -6,7 +6,7 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const EXPECTED_SCHEMA = '11';
+const EXPECTED_SCHEMA = '12';
 const REQUIRED_TABLES = [
   'historical_backfill_items',
   'historical_artifacts',
@@ -14,6 +14,7 @@ const REQUIRED_TABLES = [
   'historical_policy_evidence',
   'historical_evidence_searches',
   'historical_analysis_versions',
+  'historical_review_submissions',
   'historical_release_cohorts',
   'historical_release_cohort_items',
   'historical_release_control',
@@ -90,6 +91,18 @@ function verifyDatabase(db) {
               AND assessment.item_id = item.id AND assessment.release_eligible = 1
               AND assessment.confidence >= 0.95
               AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
+              AND (
+                assessment.methodology <> 'human-review-v1'
+                OR EXISTS (
+                  SELECT 1 FROM historical_review_submissions submission
+                  WHERE submission.item_id = item.id
+                    AND submission.assessment_version_id = assessment.id
+                    AND submission.source_checksum = item.checksum
+                    AND submission.review_checksum = assessment.input_checksum
+                    AND submission.reviewed_by = item.reviewed_by
+                    AND submission.reviewed_at = item.reviewed_at
+                )
+              )
               AND assessment.version = CAST(json_extract(item.analysis_json, '$.assessmentVersion') AS INTEGER)
               AND assessment.review_status = json_extract(item.analysis_json, '$.reviewStatus')
               AND assessment.confidence = CAST(json_extract(item.analysis_json, '$.confidence') AS REAL)

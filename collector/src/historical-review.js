@@ -152,6 +152,15 @@ function runHistoricalReview(db, options = {}) {
   if (!sourceChecksumMatches(item)) throw new Error('historical review source checksum does not match its content');
   const input = JSON.parse(fs.readFileSync(path.resolve(options.reviewFile), 'utf8'));
   const review = validateHistoricalReview(item, input);
+  const reviewJson = JSON.stringify(review);
+  const reviewChecksum = crypto.createHash('sha256').update(JSON.stringify({
+    itemId: item.id,
+    sourceChecksum: item.checksum,
+    review
+  }), 'utf8').digest('hex');
+  let assessmentId = null;
+  let assessmentVersion = null;
+  let submissionId = null;
 
   if (!options.dryRun) {
     const reviewStatus = review.analysis.ambiguities.length
@@ -173,26 +182,62 @@ function runHistoricalReview(db, options = {}) {
       gates,
       methodology: 'human-review-v1'
     };
-    const fingerprint = crypto.createHash('sha256').update(JSON.stringify({
-      itemId: item.id,
-      sourceChecksum: item.checksum,
-      review
-    }), 'utf8').digest('hex');
     db.exec('BEGIN IMMEDIATE');
     try {
-      const version = Number(db.prepare(`
-        SELECT coalesce(max(version), 0) + 1 AS version
-        FROM historical_analysis_versions WHERE item_id = ?
-      `).get(id).version);
-      const assessmentId = Number(db.prepare(`
-        INSERT INTO historical_analysis_versions (
-          item_id, version, input_checksum, review_status, confidence,
-          release_eligible, gates_json, analysis_json, methodology
-        ) VALUES (?, ?, ?, ?, 0.95, 1, ?, ?, 'human-review-v1')
+      let storedAssessment = db.prepare(`
+        SELECT * FROM historical_analysis_versions WHERE item_id = ? AND input_checksum = ?
+      `).get(id, reviewChecksum);
+      if (!storedAssessment) {
+        const version = Number(db.prepare(`
+          SELECT coalesce(max(version), 0) + 1 AS version
+          FROM historical_analysis_versions WHERE item_id = ?
+        `).get(id).version);
+        assessmentId = Number(db.prepare(`
+          INSERT INTO historical_analysis_versions (
+            item_id, version, input_checksum, review_status, confidence,
+            release_eligible, gates_json, analysis_json, methodology
+          ) VALUES (?, ?, ?, ?, 0.95, 1, ?, ?, 'human-review-v1')
+        `).run(
+          id, version, reviewChecksum, reviewStatus, JSON.stringify(gates), JSON.stringify(assessment)
+        ).lastInsertRowid);
+        storedAssessment = db.prepare('SELECT * FROM historical_analysis_versions WHERE id = ?').get(assessmentId);
+      }
+      if (storedAssessment.methodology !== 'human-review-v1'
+          || storedAssessment.review_status !== reviewStatus
+          || Number(storedAssessment.confidence) !== 0.95
+          || Number(storedAssessment.release_eligible) !== 1
+          || storedAssessment.gates_json !== JSON.stringify(gates)
+          || storedAssessment.analysis_json !== JSON.stringify(assessment)) {
+        throw new Error('existing historical review assessment does not match the normalized review');
+      }
+      assessmentId = Number(storedAssessment.id);
+      assessmentVersion = Number(storedAssessment.version);
+      db.prepare(`
+        INSERT INTO historical_review_submissions (
+          item_id, assessment_version_id, source_checksum, review_checksum,
+          review_json, reviewed_by, reviewed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(item_id, review_checksum) DO NOTHING
       `).run(
-        id, version, fingerprint, reviewStatus, JSON.stringify(gates), JSON.stringify(assessment)
-      ).lastInsertRowid);
-      const persistedAnalysis = { ...assessment, assessmentVersionId: assessmentId, assessmentVersion: version };
+        id, assessmentId, item.checksum, reviewChecksum, reviewJson,
+        review.reviewedBy, review.reviewedAt
+      );
+      const submission = db.prepare(`
+        SELECT * FROM historical_review_submissions WHERE item_id = ? AND review_checksum = ?
+      `).get(id, reviewChecksum);
+      if (!submission || Number(submission.assessment_version_id) !== assessmentId
+          || submission.source_checksum !== item.checksum
+          || submission.review_json !== reviewJson
+          || submission.reviewed_by !== review.reviewedBy
+          || submission.reviewed_at !== review.reviewedAt) {
+        throw new Error('historical review submission does not match the normalized review');
+      }
+      submissionId = Number(submission.id);
+      const persistedAnalysis = {
+        ...assessment,
+        assessmentVersionId: assessmentId,
+        assessmentVersion
+      };
       db.prepare(`
         UPDATE historical_backfill_items SET
           title = ?, issuer = ?, document_number = ?, published_at = ?, effective_at = ?, repealed_at = ?,
@@ -215,7 +260,17 @@ function runHistoricalReview(db, options = {}) {
       throw error;
     }
   }
-  return { status: 'succeeded', dryRun: Boolean(options.dryRun), id, stage: 'ready', reviewedBy: review.reviewedBy };
+  return {
+    status: 'succeeded',
+    dryRun: Boolean(options.dryRun),
+    id,
+    stage: 'ready',
+    reviewedBy: review.reviewedBy,
+    reviewChecksum,
+    submissionId,
+    assessmentId,
+    assessmentVersion
+  };
 }
 
 module.exports = { officialEvidenceUrl, runHistoricalReview, validateHistoricalReview };

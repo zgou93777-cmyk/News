@@ -25,6 +25,9 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         DROP TRIGGER IF EXISTS historical_public_releases_immutable_delete;
         DROP TRIGGER IF EXISTS historical_analysis_versions_immutable_update;
         DROP TRIGGER IF EXISTS historical_analysis_versions_immutable_delete;
+        DROP TRIGGER IF EXISTS historical_review_submissions_insert_guard;
+        DROP TRIGGER IF EXISTS historical_review_submissions_immutable_update;
+        DROP TRIGGER IF EXISTS historical_review_submissions_immutable_delete;
         DROP TRIGGER IF EXISTS historical_release_control_delete_guard;
         DROP TRIGGER IF EXISTS historical_release_control_update_guard;
         DROP TRIGGER IF EXISTS historical_release_cohorts_delete_guard;
@@ -36,6 +39,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         DROP TABLE historical_release_control;
         DROP TABLE historical_release_cohort_items;
         DROP TABLE historical_release_cohorts;
+        DROP TABLE historical_review_submissions;
         DROP TABLE historical_analysis_versions;
         DROP TABLE historical_evidence_searches;
         DROP TABLE historical_policy_evidence;
@@ -62,7 +66,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
 
     const upgraded = openDatabase(filename);
     try {
-      assert.equal(getSchemaVersion(upgraded), '11');
+      assert.equal(getSchemaVersion(upgraded), '12');
       const retry = upgraded.prepare(`
         SELECT next_attempt_at,
           next_attempt_at > '2026-07-26T10:00:00.000Z' AS remains_deferred
@@ -79,6 +83,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         'historical_verification_evidence',
         'historical_policy_evidence',
         'historical_analysis_versions',
+        'historical_review_submissions',
         'historical_release_cohorts',
         'historical_release_cohort_items',
         'historical_release_control',

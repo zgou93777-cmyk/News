@@ -57,6 +57,50 @@ test('production verifier rejects accepted evidence whose source is not currentl
   }
 });
 
+test('production verifier rejects a human assessment without its immutable submission', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const itemId = Number(db.prepare(`
+      INSERT INTO historical_backfill_items (
+        source_url, source_name, item_kind, source_year, title, issuer, published_at,
+        content_text, checksum, stage, source_status, metadata_status, lifecycle_status,
+        implementation_status, outcome_status, analysis_status, evidence_urls_json,
+        review_notes, reviewed_by, reviewed_at
+      ) VALUES ('https://www.gov.cn/review-target.htm', 'Official archive', 'document', 2000,
+        'Review target', 'State Council', '2000-01-01T00:00:00Z', 'Official review quote', ?,
+        'lifecycle_verified', 'verified', 'verified', 'not_applicable', 'not_applicable',
+        'not_applicable', 'verified', '["https://www.gov.cn/review-target.htm"]',
+        'forged review', 'reviewer-1', '2026-07-26T12:00:00Z')
+    `).run('0'.repeat(64)).lastInsertRowid);
+    const gates = [{ name: 'human_review_validation', passed: true, reason: 'forged' }];
+    const assessment = {
+      reviewStatus: 'watching', confidence: 0.95, gates, methodology: 'human-review-v1'
+    };
+    const assessmentId = Number(db.prepare(`
+      INSERT INTO historical_analysis_versions (
+        item_id, version, input_checksum, review_status, confidence,
+        release_eligible, gates_json, analysis_json, methodology
+      ) VALUES (?, 1, ?, 'watching', 0.95, 1, ?, ?, 'human-review-v1')
+    `).run(itemId, '1'.repeat(64), JSON.stringify(gates), JSON.stringify(assessment)).lastInsertRowid);
+    db.exec('DROP TRIGGER historical_backfill_ready_update_guard');
+    db.prepare(`
+      UPDATE historical_backfill_items SET stage = 'ready', analysis_json = ? WHERE id = ?
+    `).run(JSON.stringify({
+      ...assessment,
+      assessmentVersionId: assessmentId,
+      assessmentVersion: 1
+    }), itemId);
+
+    const report = verifyDatabase(db);
+    assert.equal(report.ok, false);
+    const check = report.checks.find((entry) => entry.name === 'historical_assessments');
+    assert.equal(check.ok, false);
+    assert.match(check.details, /1 violation/);
+  } finally {
+    db.close();
+  }
+});
+
 test('OCR language parser requires exact language identifiers', () => {
   const languages = tesseractLanguages('List of available languages (3):\nchi_sim\nchi_tra\neng\n');
   assert.equal(languages.has('chi_sim'), true);
