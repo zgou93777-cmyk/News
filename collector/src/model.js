@@ -58,6 +58,33 @@ function quoteExistsInDocument(quote, contentText) {
   return normalizedQuote.length >= 4 && normalizedContent.includes(normalizedQuote);
 }
 
+function structuredItems(value, maximum = 8) {
+  return arrayValue(value).slice(0, maximum).map((item, index) => {
+    if (typeof item === 'string') return { label: `要点 ${index + 1}`, detail: item.trim().slice(0, 1000) };
+    const label = asText(item?.label || item?.name || item?.group || item?.step || item?.tool || item?.title);
+    const detail = asText(item?.detail || item?.effect || item?.mechanism || item?.action
+      || item?.condition || item?.description || item?.responsibility);
+    return { label: label.slice(0, 120), detail: detail.slice(0, 1000) };
+  }).filter((item) => item.label && item.detail);
+}
+
+function historicalChanges(value) {
+  return arrayValue(value).slice(0, 8).map((item) => {
+    if (!item || typeof item !== 'object') return null;
+    const dimension = asText(item.dimension || item.aspect || item.change);
+    const previous = asText(item.previous || item.before || item.historical);
+    const current = asText(item.current || item.now || item.latest);
+    const implication = asText(item.implication || item.impact || item.meaning);
+    if (![dimension, previous, current, implication].every(Boolean)) return null;
+    return {
+      dimension: dimension.slice(0, 120),
+      previous: previous.slice(0, 1000),
+      current: current.slice(0, 1000),
+      implication: implication.slice(0, 1000)
+    };
+  }).filter(Boolean);
+}
+
 function normalizeModelAnalysis(payload, document, modelName, fallbackAnalysis) {
   const summary = asText(payload.summary).slice(0, 500) || fallbackAnalysis.summary;
   const facts = arrayValue(payload.facts).slice(0, 12);
@@ -105,6 +132,17 @@ function normalizeModelAnalysis(payload, document, modelName, fallbackAnalysis) 
       status: 'open'
     };
   }).filter((item) => item.description);
+  const frameworkInput = payload.policy_analysis && typeof payload.policy_analysis === 'object'
+    ? payload.policy_analysis
+    : payload;
+  const problem = asText(frameworkInput.policy_problem || frameworkInput.problem).slice(0, 1500);
+  const tools = structuredItems(frameworkInput.policy_tools || frameworkInput.tools);
+  const affectedGroups = structuredItems(frameworkInput.affected_groups || frameworkInput.affectedGroups);
+  const executionPath = structuredItems(frameworkInput.execution_path || frameworkInput.executionPath);
+  const comparison = historicalChanges(frameworkInput.historical_comparison || frameworkInput.historicalChanges);
+  const frameworkReady = Boolean(problem && tools.length && affectedGroups.length && executionPath.length);
+  const confirmed = factSignals.map((fact) => fact.evidenceQuote).slice(0, 8);
+  const unconfirmed = ambiguities.map((item) => item.description).slice(0, 8);
 
   return {
     summary,
@@ -117,8 +155,21 @@ function normalizeModelAnalysis(payload, document, modelName, fallbackAnalysis) 
     evidenceSummary: factSignals.length
       ? `模型从输入中提取 ${factSignals.length} 条带原文引用的事实；不得视为独立外部验证。`
       : '模型未返回可挂接的原文事实，保留规则分析证据。',
+    framework: {
+      ready: frameworkReady,
+      perspective: '公共政策执行与实际影响',
+      perspectiveNote: '从政策公开目标出发，依次核对政策工具、执行责任、受影响对象和实际结果；不从宣传口径、行业立场或资产涨跌角度评价政策。',
+      bottomLine: asText(frameworkInput.bottom_line || frameworkInput.bottomLine || payload.summary).slice(0, 1000) || summary,
+      problem,
+      tools,
+      affectedGroups,
+      executionPath,
+      historicalChanges: comparison,
+      confirmed,
+      unconfirmed
+    },
     modelName: `openai-compatible:${modelName}`,
-    promptVersion: 'analyze-policy-v1',
+    promptVersion: 'analyze-policy-v2',
     signals: factSignals.length ? factSignals : fallbackAnalysis.signals,
     forecasts,
     ambiguities: [...fallbackAnalysis.ambiguities, ...ambiguities]

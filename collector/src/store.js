@@ -202,6 +202,13 @@ function insertAnalysis(db, documentId, analysis) {
     analysis.promptVersion
   ).lastInsertRowid);
 
+  if (analysis.framework) {
+    db.prepare(`
+      INSERT INTO analysis_frameworks (analysis_version_id, framework_json, method)
+      VALUES (?, ?, ?)
+    `).run(analysisId, JSON.stringify(analysis.framework), analysis.promptVersion || analysis.modelName || 'unknown');
+  }
+
   const insertSignal = db.prepare(`
     INSERT INTO policy_signals (
       document_id, kind, label, value_text, unit, period, evidence_quote,
