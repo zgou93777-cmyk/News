@@ -90,6 +90,10 @@ function validateSegments(value, pageCount) {
 }
 
 function normalizeSegmentationSubmission(issue, input, artifacts) {
+  const reviewKind = requiredText(input.reviewKind, 'reviewKind', 50);
+  if (!['ai_assisted', 'human_verified'].includes(reviewKind)) {
+    throw new Error('reviewKind must be ai_assisted or human_verified');
+  }
   const reviewedBy = requiredText(input.reviewedBy, 'reviewedBy', 200);
   const reviewedAt = isoDate(input.reviewedAt, 'reviewedAt');
   const reviewNotes = requiredText(input.reviewNotes, 'reviewNotes', 5000);
@@ -100,6 +104,7 @@ function normalizeSegmentationSubmission(issue, input, artifacts) {
     extractionChecksum: artifacts.extraction.checksum,
     pageCount: artifacts.pageCount,
     segments,
+    reviewKind,
     reviewedBy,
     reviewedAt,
     reviewNotes
@@ -142,6 +147,7 @@ function runHistoricalSegmentationReview(db, options = {}) {
       issueId,
       pageCount: submission.pageCount,
       segmentCount: submission.segments.length,
+      reviewKind: submission.reviewKind,
       submissionChecksum: checksum
     };
   }
@@ -177,12 +183,14 @@ function runHistoricalSegmentationReview(db, options = {}) {
       })), {
         manageTransaction: false,
         candidateTag: submissionId,
-        quarantineReason: `superseded by human segmentation submission ${submissionId}`,
-        candidateReason: `Human page segmentation verified by ${submission.reviewedBy}; structured policy review required`
+        quarantineReason: `superseded by ${submission.reviewKind} segmentation submission ${submissionId}`,
+        candidateReason: submission.reviewKind === 'human_verified'
+          ? `Human page segmentation verified by ${submission.reviewedBy}; structured policy review required`
+          : `AI-assisted page segmentation drafted by ${submission.reviewedBy}; responsible human verification required`
       });
       if (inserted.items.length !== submission.segments.length
           || inserted.items.some((item) => item.document_id !== null || item.stage !== 'manual_review')) {
-        throw new Error('human segmentation did not create the expected private candidate rows');
+        throw new Error('segmentation submission did not create the expected private candidate rows');
       }
       const mapItem = db.prepare(`
         INSERT INTO historical_segmentation_submission_items (
@@ -221,6 +229,7 @@ function runHistoricalSegmentationReview(db, options = {}) {
       action,
       issueId,
       submissionId: Number(stored.id),
+      reviewKind: submission.reviewKind,
       submissionChecksum: checksum,
       candidates: mapped.map((item) => ({
         id: Number(item.id),

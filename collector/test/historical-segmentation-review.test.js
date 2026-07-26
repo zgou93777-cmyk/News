@@ -8,8 +8,8 @@ const path = require('node:path');
 const test = require('node:test');
 
 const { openDatabase } = require('../../server/src/db');
-const { insertPdfCandidates } = require('../src/historical-pdf');
 const { runHistoricalReview } = require('../src/historical-review');
+const { segmentationIssueCandidates } = require('../src/historical-review-export');
 const { runHistoricalSegmentationReview } = require('../src/historical-segmentation-review');
 
 function checksum(value) {
@@ -64,10 +64,11 @@ function segment(title, pageStart, pageEnd) {
   };
 }
 
-function submission(issue, segments) {
+function submission(issue, segments, reviewKind = 'human_verified') {
   return {
     sourcePdfChecksum: issue.sourcePdfChecksum,
     extractionChecksum: issue.extractionChecksum,
+    reviewKind,
     reviewedBy: 'reviewer-1',
     reviewedAt: '2026-07-26T12:00:00Z',
     reviewNotes: 'Compared all page boundaries and text against the official PDF.',
@@ -97,6 +98,7 @@ test('PDF segmentation validates artifacts and page ranges before any write', ()
     });
     assert.equal(dryRun.dryRun, true);
     assert.equal(dryRun.segmentCount, 2);
+    assert.equal(dryRun.reviewKind, 'human_verified');
     assert.equal(db.prepare('SELECT count(*) AS count FROM historical_segmentation_submissions').get().count, 0);
 
     const wrongChecksum = writeJson(root, 'wrong-checksum.json', {
@@ -146,6 +148,15 @@ test('PDF segmentation validates artifacts and page ranges before any write', ()
         historicalPdfSegment: issue.id, segmentsFile: boundsFile, cacheDir, dryRun: true
       }),
       /within 1-4/
+    );
+    const invalidKind = writeJson(root, 'invalid-kind.json', {
+      ...valid, reviewKind: 'automated'
+    });
+    assert.throws(
+      () => runHistoricalSegmentationReview(db, {
+        historicalPdfSegment: issue.id, segmentsFile: invalidKind, cacheDir, dryRun: true
+      }),
+      /reviewKind must be ai_assisted or human_verified/
     );
   } finally {
     db.close();
@@ -231,20 +242,25 @@ test('PDF segmentation submissions and mappings are immutable and idempotent', (
   }
 });
 
-test('a PDF candidate cannot become ready without human segmentation provenance', () => {
+test('an AI-assisted PDF segmentation remains private until human verification', () => {
   const db = openDatabase(':memory:');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-segmentation-guard-'));
   const cacheDir = path.join(root, 'cache');
   try {
     const issue = createIssue(db, cacheDir, 'automatic');
     const title = 'Automatic OCR policy candidate';
-    const contentText = `${title}\n${'OCR text is not authoritative policy text. '.repeat(12)}`;
-    const inserted = insertPdfCandidates(db, db.prepare(
-      'SELECT * FROM historical_backfill_items WHERE id = ?'
-    ).get(issue.id), [{
-      title, pageStart: 1, pageEnd: 2, contentText, checksum: checksum(contentText)
-    }]);
-    const candidate = inserted.items[0];
+    const segmentsFile = writeJson(root, 'ai-segments.json', submission(issue, [
+      segment(title, 1, 2)
+    ], 'ai_assisted'));
+    const segmented = runHistoricalSegmentationReview(db, {
+      historicalPdfSegment: issue.id, segmentsFile, cacheDir
+    });
+    assert.equal(segmented.reviewKind, 'ai_assisted');
+    const candidate = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?')
+      .get(segmented.candidates[0].id);
+    assert.equal(candidate.stage, 'manual_review');
+    assert.match(candidate.last_error, /responsible human verification required/);
+    assert.ok(segmentationIssueCandidates(db, 10).some((entry) => entry.id === issue.id));
     const reviewFile = writeJson(root, 'review.json', {
       title,
       issuer: 'State Council',
@@ -270,7 +286,7 @@ test('a PDF candidate cannot become ready without human segmentation provenance'
         ambiguities: [],
         evidenceQuotes: [title]
       },
-      reviewNotes: 'Reviewed candidate without a page segmentation submission.',
+      reviewNotes: 'Reviewed candidate whose segmentation remains AI-assisted.',
       reviewedBy: 'reviewer-1',
       reviewedAt: '2026-07-26T12:00:00Z'
     });
@@ -280,6 +296,19 @@ test('a PDF candidate cannot become ready without human segmentation provenance'
     );
     assert.equal(db.prepare('SELECT stage FROM historical_backfill_items WHERE id = ?').get(candidate.id).stage, 'manual_review');
     assert.equal(db.prepare('SELECT count(*) AS count FROM historical_review_submissions').get().count, 0);
+
+    const humanFile = writeJson(root, 'human-segments.json', {
+      ...JSON.parse(fs.readFileSync(segmentsFile, 'utf8')),
+      reviewKind: 'human_verified',
+      reviewedBy: 'responsible-reviewer',
+      reviewedAt: '2026-07-26T13:00:00Z',
+      reviewNotes: 'Responsible reviewer compared every boundary and transcription with the official PDF.'
+    });
+    const human = runHistoricalSegmentationReview(db, {
+      historicalPdfSegment: issue.id, segmentsFile: humanFile, cacheDir
+    });
+    assert.equal(human.reviewKind, 'human_verified');
+    assert.ok(!segmentationIssueCandidates(db, 10).some((entry) => entry.id === issue.id));
   } finally {
     db.close();
     fs.rmSync(root, { recursive: true, force: true });

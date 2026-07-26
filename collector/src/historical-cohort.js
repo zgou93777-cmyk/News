@@ -70,6 +70,7 @@ function regressionEntry(db, item, ordinal) {
       ON segmentation.id = segment_item.submission_id
     WHERE segment_item.item_id = ? AND segment_item.content_checksum = ?
       AND segmentation.item_id = ?
+      AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
   `).get(item.id, item.checksum, item.parent_id));
   const checks = {
     reviewStatus: REVIEW_STATUSES.has(assessment.review_status),

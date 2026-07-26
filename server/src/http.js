@@ -339,6 +339,7 @@ async function routeApi(req, res, url, context) {
               WHERE segment_item.item_id = item.id
                 AND segment_item.content_checksum = item.checksum
                 AND segmentation.item_id = item.parent_id
+                AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
             )
         ) AS segmentation_violations,
         count(*) FILTER (

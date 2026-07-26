@@ -490,6 +490,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
             WHERE segment_item.item_id = historical_backfill_items.id
               AND segment_item.content_checksum = historical_backfill_items.checksum
               AND segmentation.item_id = historical_backfill_items.parent_id
+              AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
           ))
           OR (stage = 'published' AND document_id IS NULL)
         )
@@ -504,6 +505,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
             WHERE segment_item.item_id = historical_backfill_items.id
               AND segment_item.content_checksum = historical_backfill_items.checksum
               AND segmentation.item_id = historical_backfill_items.parent_id
+              AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
           )
       ) AS pdf_segmentation_violations,
       count(*) FILTER (

@@ -119,6 +119,7 @@ test('review export copies only checksum-verified evidence needed by selected pa
     assert.equal(segments._reviewContext.pageCount, 2);
     assert.match(segments.sourcePdfChecksum, /^[a-f0-9]{64}$/);
     assert.match(segments.extractionChecksum, /^[a-f0-9]{64}$/);
+    assert.equal(segments.reviewKind, 'human_verified');
     assert.deepEqual(segments.segments[0], {
       title: '', pageStart: 1, pageEnd: 2, contentText: ''
     });

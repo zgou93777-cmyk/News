@@ -121,6 +121,7 @@ function segmentationIssueCandidates(db, maximum) {
       AND NOT EXISTS (
         SELECT 1 FROM historical_segmentation_submissions submission
         WHERE submission.item_id = item.id
+          AND json_extract(submission.segments_json, '$.reviewKind') = 'human_verified'
       )
     ORDER BY coalesce(item.source_year, 9999), item.id
     LIMIT ?
@@ -157,6 +158,7 @@ function segmentationTemplate(issue, artifacts, copiedArtifacts) {
     },
     sourcePdfChecksum: artifacts.sourcePdf.checksum,
     extractionChecksum: artifacts.extraction.checksum,
+    reviewKind: 'human_verified',
     reviewedBy: '',
     reviewedAt: '',
     reviewNotes: '',

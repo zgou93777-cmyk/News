@@ -27,6 +27,10 @@ checksum of that snapshot. Export does not change queue stages or public data.
 OCR headings are hints only. Fill the issue's `segments.json` with page ranges and
 a corrected transcription copied and checked against the official PDF. Shared
 boundary pages are allowed; ranges that overlap by more than that are rejected.
+Set `reviewKind` to `ai_assisted` for a machine-assisted draft or to
+`human_verified` only when the named responsible reviewer has inspected the
+official pages. AI-assisted submissions remain private and cannot satisfy any
+ready, cohort, health, or public-release gate.
 First validate without writing:
 
 ```bash
@@ -44,7 +48,8 @@ node collector/src/cli.js --historical-pdf-segment 2 \
 
 The source PDF and complete extraction must still match the exported SHA-256 and
 byte sizes. Applying creates only private `manual_review` candidate rows and an
-immutable segmentation submission. A corrected later submission creates distinct
+immutable segmentation submission. Only `human_verified` provenance can later
+support a structured policy review. A corrected later submission creates distinct
 candidates and quarantines the earlier ones without deleting their audit history.
 
 ## Review And Apply
@@ -72,6 +77,6 @@ node collector/src/cli.js --historical-review 123 \
 Applying stores the complete normalized review, source checksum, reviewer identity,
 review time, and linked assessment in `historical_review_submissions`. The submission
 is immutable. Ready, cohort, and public release guards reject a missing or mismatched
-review submission. Schema 13 also rejects every PDF candidate whose current content
-checksum is not linked to an immutable human segmentation submission for its parent
-issue.
+review submission. Schema 14 also rejects every PDF candidate whose current content
+checksum is not linked to an immutable `human_verified` segmentation submission for
+its parent issue.

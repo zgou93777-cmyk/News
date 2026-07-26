@@ -1,6 +1,6 @@
 # Historical First-Cohort Rollout
 
-Historical release is controlled by a Schema 13 singleton state. Its default mode
+Historical release is controlled by a Schema 14 singleton state. Its default mode
 is `disabled`; a `ready` assessment is therefore necessary but never sufficient to
 publish an article.
 

@@ -97,8 +97,8 @@ Options:
   --historical-status      Show private queue counts by stage
   --historical-audit       Audit recovery boundaries, integrity and current capacity
   --historical-review-export DIR  Export checksum-verified review bundles without database writes
-  --historical-pdf-segment ID  Store a checksum-bound human segmentation of one private PDF issue
-  --segments-file PATH     Corrected policy page ranges and transcriptions for a PDF issue
+  --historical-pdf-segment ID  Store a checksum-bound AI-assisted or human-verified PDF segmentation
+  --segments-file PATH     Page ranges, transcriptions, review kind, reviewer and source checksums
   --historical-review ID   Validate a structured human review; moves only to private ready state
   --review-file PATH       Review evidence, policy cycle, implementation, outcome and analysis JSON
   --approved-by ID         Responsible reviewer for cohort approval

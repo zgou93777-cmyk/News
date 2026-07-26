@@ -321,6 +321,9 @@ CREATE TABLE IF NOT EXISTS historical_segmentation_submission_items (
 CREATE INDEX IF NOT EXISTS idx_historical_segmentation_submission_items_parent
 ON historical_segmentation_submission_items(submission_id, item_id);
 
+-- Recreate the submission guard so schema upgrades enforce explicit reviewer kind.
+DROP TRIGGER IF EXISTS historical_segmentation_submissions_insert_guard;
+
 CREATE TRIGGER IF NOT EXISTS historical_segmentation_submissions_insert_guard
 BEFORE INSERT ON historical_segmentation_submissions
 BEGIN
@@ -343,6 +346,7 @@ BEGIN
     OR coalesce(json_extract(NEW.segments_json, '$.reviewedBy'), '') <> NEW.reviewed_by
     OR coalesce(json_extract(NEW.segments_json, '$.reviewedAt'), '') <> NEW.reviewed_at
     OR coalesce(json_extract(NEW.segments_json, '$.reviewNotes'), '') <> NEW.review_notes
+    OR coalesce(json_extract(NEW.segments_json, '$.reviewKind'), '') NOT IN ('ai_assisted', 'human_verified')
   THEN RAISE(ABORT, 'historical segmentation submission does not match its source issue') END;
 END;
 
@@ -739,6 +743,7 @@ BEGIN
           WHERE segment_item.item_id = item.id
             AND segment_item.content_checksum = item.checksum
             AND segmentation.item_id = item.parent_id
+            AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
         )
       )
       AND (
@@ -888,6 +893,7 @@ BEGIN
       WHERE segment_item.item_id = NEW.id
         AND segment_item.content_checksum = NEW.checksum
         AND segmentation.item_id = NEW.parent_id
+        AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
     )) OR
     NOT EXISTS (
       SELECT 1 FROM historical_analysis_versions assessment
@@ -963,6 +969,7 @@ BEGIN
       WHERE segment_item.item_id = NEW.id
         AND segment_item.content_checksum = NEW.checksum
         AND segmentation.item_id = NEW.parent_id
+        AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
     )) OR
     NOT EXISTS (
       SELECT 1 FROM historical_analysis_versions assessment
@@ -1026,5 +1033,5 @@ SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at)
 WHERE next_attempt_at GLOB '????-??-?? ??:??:??*'
   AND strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at) IS NOT NULL;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '13')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '14')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

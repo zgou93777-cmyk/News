@@ -6,7 +6,7 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const EXPECTED_SCHEMA = '13';
+const EXPECTED_SCHEMA = '14';
 const REQUIRED_TABLES = [
   'historical_backfill_items',
   'historical_artifacts',
@@ -127,6 +127,7 @@ function verifyDatabase(db) {
               WHERE segment_item.item_id = item.id
                 AND segment_item.content_checksum = item.checksum
                 AND segmentation.item_id = item.parent_id
+                AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
             )
         ) AS segmentation_violations,
         count(*) FILTER (

@@ -20,7 +20,7 @@ Inside one transaction the worker:
 7. Inserts an immutable private-to-public release mapping.
 8. Marks the private item `published` and links its public document.
 
-Schema 13 SQLite triggers independently reject a release unless the approved assessment
+Schema 14 SQLite triggers independently reject a release unless the approved assessment
 has confidence of at least `0.95`, contains no failed gate, uses
 `historical-evidence-gates-v2` or `human-review-v1`, and exactly matches the queue
 analysis plus the public title, issuer, document number, dates, content, checksum,
