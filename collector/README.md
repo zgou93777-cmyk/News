@@ -64,8 +64,11 @@ node src/cli.js --historical-verify --adaptive-load --min-items 5 --max-items 10
 # 在后续官方材料中检索实际实施、已拨付资金和结果数据
 node src/cli.js --historical-evidence --adaptive-load --min-items 5 --max-items 100
 
-# 对已闭合的证据链执行四状态分类和置信度门槛；通过后只进入私有 ready
+# 对已闭合的证据链执行四状态分类和置信度门槛；通过后等待结构化解读
 node src/cli.js --historical-analyze --adaptive-load --min-items 5 --max-items 100
+
+# 逐篇生成政策问题、工具、对象和执行路径，并反查每条官方原文引用；完整后才进入私有 ready
+node src/cli.js --historical-framework --analysis auto --adaptive-load --min-items 5 --max-items 100
 
 # 满100条后执行资格、引用和负载回归；不足100条只报告等待
 node src/cli.js --historical-cohort-audit --max-items 100
@@ -105,7 +108,7 @@ node src/cli.js --historical-pdf-segment 2 --segments-file /secure/review-bundle
 node src/cli.js --historical-pdf-segment 2 --segments-file /secure/review-bundles/cohort-1/issues/2/segments.json
 ```
 
-审校文件必须同时包含：官方 `.gov.cn` 原文及补充证据 URL、标题/机构/发文日期、政策生效与废止周期、实施和结果证据状态、逐字证据摘录、分析摘要、歧义、审校说明和审校人。会议或文件表态不能作为实施证据；“未找到结果证据”必须明确记录为 `not_found`，不能改写成已兑现。数据库触发器会拒绝把字段不完整的条目标记为 `ready` 或 `published`。
+审校文件必须同时包含：官方 `.gov.cn` 原文及补充证据 URL、标题/机构/发文日期、政策生效与废止周期、实施和结果证据状态、逐字证据摘录、分析摘要、歧义、结构化政策问题/工具/对象/执行路径及其逐项引用、审校说明和审校人。会议或文件表态不能作为实施证据；“未找到结果证据”必须明确记录为 `not_found`，不能改写成已兑现。数据库触发器会拒绝把字段不完整或引用无法回链的条目标记为 `ready` 或 `published`。
 
 当前国务院公报官方导航始于 1954 年，且未列出 1967—1979 年；1949—1953 年需要另行寻找中央人民政府时期官方档案。因此首页只显示实际通过核验的最早和最晚年份，不宣称已经完整覆盖 1949 至今。
 
