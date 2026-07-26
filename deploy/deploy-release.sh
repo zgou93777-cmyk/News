@@ -102,7 +102,7 @@ install -m 0644 "${APP_DIR}/collector/systemd/policy-monitor-historical.timer" /
 
 (
   cd "${APP_DIR}/server"
-  "$NODE_BIN" --disable-warning=ExperimentalWarning scripts/init-db.js
+  DB_PATH="$DB_PATH" "$NODE_BIN" --disable-warning=ExperimentalWarning scripts/init-db.js
 )
 DB_PATH="$DB_PATH" "$NODE_BIN" --disable-warning=ExperimentalWarning \
   "${APP_DIR}/deploy/verify-production.js" --db-path "$DB_PATH" --check-ocr

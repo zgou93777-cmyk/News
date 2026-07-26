@@ -15,6 +15,12 @@ const REQUIRED_TABLES = [
   'historical_analysis_versions',
   'historical_public_releases'
 ];
+const OCR_COMMANDS = [
+  ['pdftotext', ['-v']],
+  ['pdfinfo', ['-v']],
+  ['pdftoppm', ['-v']],
+  ['tesseract', ['--version']]
+];
 
 function verifyDatabase(db) {
   const checks = [];
@@ -72,12 +78,7 @@ function tesseractLanguages(output) {
 }
 
 function verifyOcrTools() {
-  const checks = [
-    commandCheck('pdftotext'),
-    commandCheck('pdfinfo'),
-    commandCheck('pdftoppm'),
-    commandCheck('tesseract')
-  ];
+  const checks = OCR_COMMANDS.map(([command, args]) => commandCheck(command, args));
   const languages = spawnSync('tesseract', ['--list-langs'], {
     encoding: 'utf8', timeout: 10_000, windowsHide: true
   });
@@ -132,4 +133,11 @@ if (require.main === module) {
   }
 }
 
-module.exports = { EXPECTED_SCHEMA, parseArguments, tesseractLanguages, verifyDatabase, verifyOcrTools };
+module.exports = {
+  EXPECTED_SCHEMA,
+  OCR_COMMANDS,
+  parseArguments,
+  tesseractLanguages,
+  verifyDatabase,
+  verifyOcrTools
+};
