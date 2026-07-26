@@ -23,6 +23,7 @@ function loadConfig() {
     host: process.env.HOST || '127.0.0.1',
     port: integerFromEnv('PORT', 5191, 1, 65535),
     dbPath: resolveFromServerRoot(process.env.DB_PATH, 'data/policy-monitor.db'),
+    historicalCacheDir: resolveFromServerRoot(process.env.HISTORICAL_CACHE_DIR, 'data/historical-cache'),
     frontendDir: resolveFromServerRoot(process.env.FRONTEND_DIR, '../frontend'),
     maxBodyBytes: integerFromEnv('MAX_BODY_BYTES', 32 * 1024, 1024, 1024 * 1024),
     vapidSubject: process.env.VAPID_SUBJECT || '',

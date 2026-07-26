@@ -364,10 +364,10 @@ function imageDimensions(buffer, extension) {
   return null;
 }
 
-async function readLimitedBody(response, maximumBytes, controller) {
+async function readLimitedBody(response, maximumBytes, controller, resourceLabel = 'image') {
   if (!response.body) {
     const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > maximumBytes) throw new Error(`image exceeds ${maximumBytes} byte limit`);
+    if (buffer.length > maximumBytes) throw new Error(`${resourceLabel} exceeds ${maximumBytes} byte limit`);
     return buffer;
   }
   const chunks = [];
@@ -377,7 +377,7 @@ async function readLimitedBody(response, maximumBytes, controller) {
     total += buffer.length;
     if (total > maximumBytes) {
       controller.abort();
-      throw new Error(`image exceeds ${maximumBytes} byte limit`);
+      throw new Error(`${resourceLabel} exceeds ${maximumBytes} byte limit`);
     }
     chunks.push(buffer);
   }
@@ -429,7 +429,7 @@ function httpsRequestPinned(url, addresses, options = {}) {
       });
     });
     const absoluteTimeout = setTimeout(
-      () => request.destroy(new Error('image request timed out')),
+      () => request.destroy(new Error(`${options.resourceLabel || 'image'} request timed out`)),
       options.timeoutMs || 20_000
     );
     request.on('error', (error) => {
@@ -686,7 +686,9 @@ module.exports = {
   MIN_IMAGE_HEIGHT,
   MIN_IMAGE_WIDTH,
   USER_AGENT,
+  abortResponse,
   assertSafeRemoteUrl,
+  atomicCacheWrite,
   cacheSourceImage,
   extractSourceImageCandidates,
   fetchImageBuffer,
@@ -696,6 +698,8 @@ module.exports = {
   isAllowedImageHost,
   isSameSiteOrSubdomain,
   imageDimensions,
+  httpsRequestPinned,
+  readLimitedBody,
   resolvePublicAddresses,
   sniffImageExtension
 };

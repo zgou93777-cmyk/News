@@ -29,7 +29,8 @@ qualifying result is recorded as `not_found`; an incomplete search remains pendi
 
 ## Resource envelope
 
-The production worker is a one-shot systemd service with a 320 MB memory limit.
+The production worker is a one-shot systemd service with a 512 MB memory limit and
+a 150% CPU quota so OCR cannot consume both cores indefinitely.
 Each hourly run selects at most 100 rows. The adaptive controller reduces a batch
 to 50, 25, or 5 rows as normalized CPU load rises or free memory falls. Remote HTML
 requests retain a five-second interval. Local cached PDF stages do not consume the
@@ -48,10 +49,10 @@ backlog, verification backlog, indexed containers, ready rows, and published row
 It also reports missing years or metadata, release-guard violations, broken parent
 links, common failure messages, and the load-adjusted batch recommendation.
 
-## Next implementation contract
+## PDF implementation contract
 
-The PDF worker must cache immutable source bytes by checksum, preserve page-level
-text provenance, prefer embedded text, use Chinese OCR only when required, split an
-issue into deterministic document candidates, and resume after every durable stage.
-It may create private document candidates but may not mark them `ready` or publish
-them. The verification workers remain responsible for every release field.
+The PDF worker caches immutable source bytes by checksum, preserves page-level text
+provenance, prefers embedded text, uses Chinese OCR only when required, splits an
+issue into deterministic document candidates, and resumes after every durable
+stage. It may create private document candidates but may not mark them `ready` or
+publish them. The verification workers remain responsible for every release field.

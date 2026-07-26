@@ -258,6 +258,27 @@ ON historical_backfill_items(stage, next_attempt_at, source_year, id);
 CREATE INDEX IF NOT EXISTS idx_historical_backfill_parent
 ON historical_backfill_items(parent_id, item_kind, id);
 
+CREATE TABLE IF NOT EXISTS historical_artifacts (
+  id INTEGER PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
+  artifact_type TEXT NOT NULL CHECK (artifact_type IN (
+    'source_pdf', 'embedded_text', 'ocr_page', 'ocr_text', 'segmentation'
+  )),
+  storage_path TEXT NOT NULL,
+  checksum TEXT NOT NULL CHECK (length(checksum) = 64),
+  byte_size INTEGER NOT NULL CHECK (byte_size >= 0),
+  page_start INTEGER NOT NULL DEFAULT 0 CHECK (page_start >= 0),
+  page_end INTEGER NOT NULL DEFAULT 0 CHECK (page_end >= page_start),
+  engine TEXT NOT NULL DEFAULT '',
+  engine_version TEXT NOT NULL DEFAULT '',
+  metadata_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(metadata_json)),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE(item_id, artifact_type, page_start, checksum)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_artifacts_item
+ON historical_artifacts(item_id, artifact_type, page_start);
+
 CREATE TRIGGER IF NOT EXISTS historical_backfill_ready_insert_guard
 BEFORE INSERT ON historical_backfill_items
 WHEN NEW.stage IN ('ready', 'published')
@@ -303,5 +324,5 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '3')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '4')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

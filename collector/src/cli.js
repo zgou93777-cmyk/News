@@ -15,6 +15,7 @@ const {
   runHistoricalQueue
 } = require('./historical-backfill');
 const { runHistoricalReview } = require('./historical-review');
+const { runHistoricalPdfQueue } = require('./historical-pdf');
 const { runCollection, runSeedBackfill } = require('./pipeline');
 const { runReconcileLineage } = require('./reconcile-lineage');
 const { runReconcileRelevance } = require('./reconcile');
@@ -29,7 +30,8 @@ const VALUE_OPTIONS = new Map([
   ['--family-slug', 'familySlug'], ['--family-title', 'familyTitle'],
   ['--historical-source', 'historicalSource'], ['--historical-sources-file', 'historicalSourcesFile'],
   ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'], ['--min-items', 'minItems'],
-  ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile']
+  ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile'],
+  ['--historical-cache-dir', 'cacheDir'], ['--ocr-page-budget', 'ocrPageBudget']
 ]);
 
 const HELP = `Usage:
@@ -43,6 +45,7 @@ const HELP = `Usage:
   node src/cli.js --reconcile-lineage [--dry-run|--apply]
   node src/cli.js --historical-discover [--from-year 1949] [--to-year YYYY] [--max-items 100]
   node src/cli.js --historical-process [--adaptive-load] [--min-items 5] [--max-items 100]
+  node src/cli.js --historical-pdf-process [--adaptive-load] [--max-items 5] [--ocr-page-budget 20]
   node src/cli.js --historical-status
   node src/cli.js --historical-audit
   node src/cli.js --historical-review <queue-id> --review-file <review.json> [--dry-run]
@@ -60,6 +63,7 @@ Options:
   --public-base-url URL     Override PUBLIC_BASE_URL for notification links
   --historical-discover    Discover official archive entries into the private review queue
   --historical-process     Slowly fetch/extract queued entries; never publishes them
+  --historical-pdf-process Cache, extract/OCR and segment private PDF issue rows
   --adaptive-load          Recheck CPU and memory pressure between historical items
   --historical-status      Show private queue counts by stage
   --historical-audit       Audit recovery boundaries, integrity and current capacity
@@ -69,6 +73,7 @@ Options:
   --to-year YYYY           Historical discovery upper bound
   --delay-ms N             Delay between historical queue items; default 1500
   --min-items N            Minimum adaptive batch size; default 5
+  --ocr-page-budget N      Maximum newly OCRed pages per PDF and run; default 20
 `;
 
 function parseArguments(argv) {
@@ -85,6 +90,7 @@ function parseArguments(argv) {
     else if (argument === '--reconcile-lineage') options.reconcileLineage = true;
     else if (argument === '--historical-discover') options.historicalDiscover = true;
     else if (argument === '--historical-process') options.historicalProcess = true;
+    else if (argument === '--historical-pdf-process') options.historicalPdfProcess = true;
     else if (argument === '--historical-status') options.historicalStatus = true;
     else if (argument === '--historical-audit') options.historicalAudit = true;
     else if (argument === '--adaptive-load') options.adaptiveLoad = true;
@@ -133,17 +139,27 @@ function parseArguments(argv) {
       throw new Error('--delay-ms must be an integer from 0 to 60000');
     }
   }
-  if (options.adaptiveLoad && !options.historicalProcess) {
-    throw new Error('--adaptive-load is only valid with --historical-process');
+  if (options.ocrPageBudget !== undefined) {
+    options.ocrPageBudget = Number(options.ocrPageBudget);
+    if (!Number.isSafeInteger(options.ocrPageBudget) || options.ocrPageBudget < 1 || options.ocrPageBudget > 200) {
+      throw new Error('--ocr-page-budget must be an integer from 1 to 200');
+    }
+    if (!options.historicalPdfProcess) {
+      throw new Error('--ocr-page-budget is only valid with --historical-pdf-process');
+    }
   }
-  if (options.minItems !== undefined && !options.historicalProcess) {
-    throw new Error('--min-items is only valid with --historical-process');
+  if (options.adaptiveLoad && !options.historicalProcess && !options.historicalPdfProcess) {
+    throw new Error('--adaptive-load is only valid with a historical processing mode');
+  }
+  if (options.minItems !== undefined && !options.historicalProcess && !options.historicalPdfProcess) {
+    throw new Error('--min-items is only valid with a historical processing mode');
   }
   const modes = [
     Boolean(options.url), Boolean(options.file), Boolean(options.allSources),
     Boolean(options.backfillSeed), Boolean(options.backfillImages),
     Boolean(options.reconcileRelevance), Boolean(options.reconcileLineage),
-    Boolean(options.historicalDiscover), Boolean(options.historicalProcess), Boolean(options.historicalStatus),
+    Boolean(options.historicalDiscover), Boolean(options.historicalProcess), Boolean(options.historicalPdfProcess),
+    Boolean(options.historicalStatus),
     Boolean(options.historicalAudit),
     Boolean(options.historicalReview)
   ].filter(Boolean).length;
@@ -186,6 +202,7 @@ async function main() {
   const dbPath = path.resolve(options.dbPath || serverConfig.dbPath);
   options.notificationConfig = serverConfig;
   options.frontendDir = serverConfig.frontendDir;
+  options.cacheDir = path.resolve(options.cacheDir || serverConfig.historicalCacheDir);
   options.publicBaseUrl = options.publicBaseUrl || process.env.PUBLIC_BASE_URL || '';
 
   // Seed dry-runs use an isolated database because the seed operation is intentionally idempotent but write-based.
@@ -201,6 +218,8 @@ async function main() {
         ? await runHistoricalDiscovery(db, { ...options, notify: false })
       : options.historicalProcess
         ? await runHistoricalQueue(db, { ...options, notify: false })
+      : options.historicalPdfProcess
+        ? await runHistoricalPdfQueue(db, { ...options, notify: false })
       : options.historicalStatus
         ? { status: 'succeeded', queue: historicalQueueStats(db) }
       : options.historicalAudit

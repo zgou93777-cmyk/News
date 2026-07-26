@@ -46,7 +46,7 @@ node src/cli.js --reconcile-relevance --apply
 
 ## 1949 至今的历史回填
 
-历史回填与日常采集隔离。发现和提取不会写入公开 `documents` 表，也不会发送通知；自动处理的 HTML 最多进入 `needs_review`，公报 PDF 因涉及 OCR、版面和多篇文件拆分，只进入 `manual_review`。
+历史回填与日常采集隔离。发现和提取不会写入公开 `documents` 表，也不会发送通知；自动处理的 HTML 最多进入 `needs_review`。公报 PDF 先进入 `manual_review`，再由独立任务执行缓存、文本提取、逐页 OCR 和文章拆分；拆出的候选文章仍只进入私有 `needs_review`。
 
 ```bash
 # 读取国务院公报官方导航，记录真实缺口并建立私有队列
@@ -54,6 +54,9 @@ node src/cli.js --historical-discover --from-year 1949 --max-items 100
 
 # 每次根据 CPU 和可用内存在 5—100 条之间动态调整；远程请求间隔 5 秒
 node src/cli.js --historical-process --adaptive-load --min-items 5 --max-items 100 --delay-ms 5000
+
+# 处理私有 PDF 队列；优先内嵌文本，必要时每份最多新增 OCR 20 页并保存断点
+node src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --delay-ms 5000
 
 # 查看私有队列，不影响首页或公开 API
 node src/cli.js --historical-status
@@ -75,6 +78,7 @@ node src/cli.js --historical-review 123 --review-file /secure/reviews/123.json
 
 ```dotenv
 DB_PATH=/opt/policy-monitor/server/data/policy-monitor.db
+HISTORICAL_CACHE_DIR=/var/lib/policy-monitor/historical-cache
 PUBLIC_BASE_URL=https://policy.example.com
 
 # 可选模型；三个值必须同时存在

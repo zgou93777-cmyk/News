@@ -13,8 +13,10 @@ EnvironmentFile=/etc/policy-monitor/policy-monitor.env
 Environment=NODE_ENV=production
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-discover --from-year 1949 --max-items 100
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-process --adaptive-load --min-items 5 --max-items 100 --delay-ms 5000
-TimeoutStartSec=20min
-MemoryMax=320M
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --delay-ms 5000
+TimeoutStartSec=50min
+MemoryMax=512M
+CPUQuota=150%
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true

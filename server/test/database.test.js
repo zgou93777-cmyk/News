@@ -17,7 +17,8 @@ const REQUIRED_TABLES = [
   'assessment_snapshots',
   'push_subscriptions',
   'sync_runs',
-  'historical_backfill_items'
+  'historical_backfill_items',
+  'historical_artifacts'
 ];
 
 test('historical backfill records are private and verification-gated', () => {
@@ -40,6 +41,32 @@ test('historical backfill records are private and verification-gated', () => {
       () => db.prepare("UPDATE historical_backfill_items SET stage = 'ready' WHERE id = ?").run(row.id),
       /not fully verified/
     );
+  } finally {
+    db.close();
+  }
+});
+
+test('historical artifacts preserve checksums and remain private with their queue item', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const itemId = Number(db.prepare(`
+      INSERT INTO historical_backfill_items (source_url, source_name, source_year, item_kind, stage)
+      VALUES (?, ?, ?, 'issue', 'manual_review')
+    `).run('https://www.gov.cn/gongbao/test.pdf', 'Official Gazette', 1954).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO historical_artifacts (
+        item_id, artifact_type, storage_path, checksum, byte_size, page_start, page_end, engine
+      ) VALUES (?, 'source_pdf', 'pdf/source.pdf', ?, 1024, 0, 0, 'download')
+    `).run(itemId, 'a'.repeat(64));
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM historical_artifacts').get().count, 1);
+    assert.throws(
+      () => db.prepare(`
+        INSERT INTO historical_artifacts (item_id, artifact_type, storage_path, checksum, byte_size)
+        VALUES (?, 'embedded_text', 'text/source.txt', 'short', 10)
+      `).run(itemId),
+      /CHECK constraint failed/
+    );
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
   } finally {
     db.close();
   }

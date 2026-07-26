@@ -76,6 +76,10 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   assert.throws(() => parseArguments(['--historical-process', '--delay-ms', '60001']), /0 to 60000/);
   assert.throws(() => parseArguments(['--historical-process', '--min-items', '13', '--max-items', '12']), /cannot exceed/);
   assert.throws(() => parseArguments(['--adaptive-load']), /only valid/);
+  const pdf = parseArguments(['--historical-pdf-process', '--adaptive-load', '--ocr-page-budget', '20']);
+  assert.equal(pdf.historicalPdfProcess, true);
+  assert.equal(pdf.ocrPageBudget, 20);
+  assert.throws(() => parseArguments(['--historical-pdf-process', '--ocr-page-budget', '201']), /1 to 200/);
   assert.equal(parseArguments(['--historical-audit']).historicalAudit, true);
   assert.throws(
     () => parseArguments(['--historical-audit', '--historical-status']),
