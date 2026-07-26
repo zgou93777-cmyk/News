@@ -23,6 +23,31 @@ const EVENT_TYPE_LABELS = Object.freeze({
 
 const ARTICLE_ORDER_SQL = 'd.published_at DESC, d.importance DESC, d.id DESC';
 const SHANGHAI_DATE_SQL = "date('now', '+8 hours')";
+const REVIEW_STATUS_SQL = `CASE
+  WHEN EXISTS (
+    SELECT 1 FROM ambiguities am
+    WHERE am.document_id = d.id AND am.status IN ('open', 'watching', 'disputed')
+  ) THEN 'ambiguous'
+  WHEN EXISTS (
+    SELECT 1 FROM forecasts f
+    WHERE f.analysis_version_id = av.id AND f.status = 'verified'
+  ) THEN 'verified'
+  WHEN EXISTS (
+    SELECT 1 FROM forecasts f
+    WHERE f.analysis_version_id = av.id AND f.status = 'partially_verified'
+  ) THEN 'partial'
+  ELSE 'watching'
+END`;
+
+const LATEST_ANALYSIS_JOIN_SQL = `
+  LEFT JOIN analysis_versions av ON av.id = (
+    SELECT av2.id
+    FROM analysis_versions av2
+    WHERE av2.document_id = d.id AND av2.status = 'published'
+    ORDER BY av2.version DESC, av2.id DESC
+    LIMIT 1
+  )
+`;
 
 function mapArticle(row) {
   if (!row) return null;
@@ -115,6 +140,7 @@ function listCategories(db) {
       COUNT(*) AS article_count,
       MAX(published_at) AS latest_published_at
     FROM documents
+    WHERE status <> 'draft'
     GROUP BY category
     ORDER BY article_count DESC, category COLLATE NOCASE
   `).all().map((row) => ({
@@ -122,6 +148,89 @@ function listCategories(db) {
     count: row.article_count,
     latestPublishedAt: row.latest_published_at
   }));
+}
+
+function archiveConditions(filters = {}) {
+  const conditions = ["d.status <> 'draft'"];
+  const params = [];
+  if (filters.q) {
+    const query = `%${escapeLike(filters.q)}%`;
+    conditions.push(`(
+      d.title LIKE ? ESCAPE '\\' OR
+      d.subtitle LIKE ? ESCAPE '\\' OR
+      d.summary LIKE ? ESCAPE '\\' OR
+      d.issuer LIKE ? ESCAPE '\\' OR
+      d.content_text LIKE ? ESCAPE '\\' OR
+      av.headline LIKE ? ESCAPE '\\' OR
+      av.interpretation LIKE ? ESCAPE '\\'
+    )`);
+    params.push(query, query, query, query, query, query, query);
+  }
+  if (filters.category) {
+    conditions.push('d.category = ?');
+    params.push(filters.category);
+  }
+  if (filters.fromYear) {
+    conditions.push('CAST(substr(d.published_at, 1, 4) AS INTEGER) >= ?');
+    params.push(filters.fromYear);
+  }
+  if (filters.toYear) {
+    conditions.push('CAST(substr(d.published_at, 1, 4) AS INTEGER) <= ?');
+    params.push(filters.toYear);
+  }
+  if (filters.reviewStatus) {
+    conditions.push(`(${REVIEW_STATUS_SQL}) = ?`);
+    params.push(filters.reviewStatus);
+  }
+  if (filters.hasForecast) {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM forecasts f WHERE f.analysis_version_id = av.id
+    )`);
+  }
+  return { conditions, params };
+}
+
+function getArchiveOverview(db, filters = {}) {
+  const { conditions, params } = archiveConditions(filters);
+  const rows = db.prepare(`
+    SELECT
+      CAST(substr(d.published_at, 1, 4) AS INTEGER) AS published_year,
+      ${REVIEW_STATUS_SQL} AS review_status,
+      COUNT(*) AS article_count
+    FROM documents d
+    ${LATEST_ANALYSIS_JOIN_SQL}
+    WHERE ${conditions.join(' AND ')}
+    GROUP BY published_year, review_status
+    ORDER BY published_year, review_status
+  `).all(...params);
+
+  const byStatus = { verified: 0, partial: 0, ambiguous: 0, watching: 0 };
+  const byDecade = new Map();
+  let total = 0;
+  let earliestYear = null;
+  let latestYear = null;
+  for (const row of rows) {
+    const count = Number(row.article_count || 0);
+    const year = Number(row.published_year);
+    total += count;
+    if (Object.hasOwn(byStatus, row.review_status)) byStatus[row.review_status] += count;
+    if (Number.isInteger(year)) {
+      earliestYear = earliestYear == null ? year : Math.min(earliestYear, year);
+      latestYear = latestYear == null ? year : Math.max(latestYear, year);
+      const decade = Math.floor(year / 10) * 10;
+      byDecade.set(decade, (byDecade.get(decade) || 0) + count);
+    }
+  }
+
+  return {
+    total,
+    byStatus,
+    earliestYear,
+    latestYear,
+    requestedStartYear: filters.fromYear || 1949,
+    requestedEndYear: filters.toYear || new Date().getFullYear(),
+    byDecade: [...byDecade.entries()].map(([decade, count]) => ({ decade, count }))
+  };
 }
 
 function listArticles(db, filters) {
@@ -150,18 +259,29 @@ function listArticles(db, filters) {
   } else {
     conditions.push("d.status <> 'draft'");
   }
+  if (filters.fromYear) {
+    conditions.push('CAST(substr(d.published_at, 1, 4) AS INTEGER) >= ?');
+    params.push(filters.fromYear);
+  }
+  if (filters.toYear) {
+    conditions.push('CAST(substr(d.published_at, 1, 4) AS INTEGER) <= ?');
+    params.push(filters.toYear);
+  }
+  if (filters.reviewStatus) {
+    conditions.push(`(${REVIEW_STATUS_SQL}) = ?`);
+    params.push(filters.reviewStatus);
+  }
+  if (filters.hasForecast) {
+    conditions.push(`EXISTS (
+      SELECT 1 FROM forecasts f WHERE f.analysis_version_id = av.id
+    )`);
+  }
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
 
   const joins = `
     LEFT JOIN policy_families pf ON pf.id = d.family_id
     JOIN sources s ON s.id = d.source_id
-    LEFT JOIN analysis_versions av ON av.id = (
-      SELECT av2.id
-      FROM analysis_versions av2
-      WHERE av2.document_id = d.id AND av2.status = 'published'
-      ORDER BY av2.version DESC, av2.id DESC
-      LIMIT 1
-    )
+    ${LATEST_ANALYSIS_JOIN_SQL}
   `;
 
   const total = db.prepare(`
@@ -548,6 +668,7 @@ function recordView(db, visitorHash, articleId = null) {
 }
 
 module.exports = {
+  getArchiveOverview,
   getArticleDetail,
   getArticleViewStats,
   getSiteViewStats,

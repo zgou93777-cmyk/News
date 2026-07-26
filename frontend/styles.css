@@ -553,6 +553,20 @@ svg {
 
 .snapshot-item {
   border-left: 1px solid var(--line);
+  color: inherit;
+  text-decoration: none;
+  transition: background-color 150ms ease, box-shadow 150ms ease;
+}
+
+.snapshot-item:hover {
+  background: var(--canvas);
+}
+
+.snapshot-item:focus-visible {
+  position: relative;
+  z-index: 1;
+  outline: 2px solid var(--ink);
+  outline-offset: -3px;
 }
 
 .snapshot-intro-copy {
@@ -983,6 +997,46 @@ svg {
 
 .archive-side .article-view-count {
   color: var(--ink-faint);
+}
+
+.archive-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  min-height: 62px;
+  margin-top: 18px;
+  color: var(--ink-faint);
+  font-size: 13px;
+}
+
+.pagination-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 38px;
+  padding: 0 13px;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--line-strong);
+  text-decoration: none;
+}
+
+.pagination-button:hover {
+  border-color: var(--ink);
+}
+
+.pagination-button.is-disabled {
+  color: var(--ink-faint);
+  background: var(--canvas);
+  pointer-events: none;
+  opacity: 0.65;
+}
+
+.pagination-button svg {
+  width: 16px;
+  height: 16px;
 }
 
 .empty-state,
@@ -1868,6 +1922,11 @@ noscript {
     border-top: 1px solid var(--line);
   }
 
+  .filter-selects {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
   .bottom-nav a,
   .bottom-nav button {
     display: flex;
@@ -2504,7 +2563,7 @@ noscript {
 
   .filter-selects {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr;
   }
 
   .filter-selects select {

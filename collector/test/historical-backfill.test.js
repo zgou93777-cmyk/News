@@ -1,0 +1,214 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const { openDatabase } = require('../../server/src/db');
+const {
+  discoverHistoricalLinks,
+  enqueueHistoricalItem,
+  historicalQueueStats,
+  runHistoricalDiscovery,
+  runHistoricalQueue
+} = require('../src/historical-backfill');
+const { validateHistoricalReview } = require('../src/historical-review');
+
+test('historical discovery keeps official links and preserves honest years', () => {
+  const raw = JSON.stringify({
+    issues: [
+      { year: 1954, title: '1954年第1号', url: '/gongbao/shuju/1954/gwyb195401.pdf' },
+      { year: 2000, title: '2000年第1号', url: '/gongbao/2000/issue_1000/' },
+      { year: 1948, title: 'outside range', url: '/gongbao/1948/a.htm' },
+      { year: 2001, title: 'external', url: 'https://example.com/a.htm' }
+    ],
+    values: {
+      '1955年': {
+        '第1号': { issue: '第1号', gname: 'https://www.gov.cn/gongbao/1955/issue_2000/' }
+      }
+    }
+  });
+  const links = discoverHistoricalLinks(raw, 'https://www.gov.cn/gongbao/gbgl.json', {
+    allowedHosts: ['www.gov.cn'],
+    fromYear: 1949,
+    toYear: 2000
+  });
+  assert.equal(links.length, 3);
+  assert.deepEqual(links.map((item) => item.sourceYear), [1954, 1955, 2000]);
+  assert.equal(links[0].sourceType, 'pdf');
+  assert.equal(links[0].itemKind, 'issue');
+  assert.equal(links[1].itemKind, 'issue');
+  assert.equal(links[2].itemKind, 'issue');
+});
+
+test('legacy official script rows become deterministic PDF issue URLs without execution', () => {
+  const script = `var dat = [
+    ["1955", "--", "1", "2", "23"],
+    ["1954", "--", "1", "2", "3"],
+  ];`;
+  const links = discoverHistoricalLinks(script, 'https://www.gov.cn/images/gbIssue.js', {
+    allowedHosts: ['www.gov.cn'],
+    fromYear: 1954,
+    toYear: 1955
+  });
+  assert.equal(links.length, 6);
+  assert.equal(links[0].url, 'https://www.gov.cn/gongbao/shuju/1954/gwyb195401.pdf');
+  assert.equal(links[5].url, 'https://www.gov.cn/gongbao/shuju/1955/gwyb195523.pdf');
+  assert.ok(links.every((item) => item.itemKind === 'issue' && item.sourceType === 'pdf'));
+});
+
+test('historical discovery resumes after URLs already queued', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const navigation = JSON.stringify({ values: {
+      '1954年': { '第1号': { issue: '第1号', gname: 'https://www.gov.cn/gongbao/1954/issue_1/' } },
+      '1955年': { '第1号': { issue: '第1号', gname: 'https://www.gov.cn/gongbao/1955/issue_2/' } }
+    } });
+    const dependencies = { fetchText: async () => ({ body: navigation, contentType: 'application/json', finalUrl: 'https://www.gov.cn/gongbao/gbgl.json' }) };
+    const first = await runHistoricalDiscovery(db, { fromYear: 1949, toYear: 1955, maxItems: 1 }, dependencies);
+    const second = await runHistoricalDiscovery(db, { fromYear: 1949, toYear: 1955, maxItems: 1 }, dependencies);
+    assert.equal(first.queued, 1);
+    assert.equal(first.sources[0].remainingAfterBatch, 1);
+    assert.equal(second.queued, 1);
+    assert.equal(second.sources[0].remainingAfterBatch, 0);
+    assert.deepEqual(
+      db.prepare('SELECT source_year FROM historical_backfill_items ORDER BY source_year').all().map((row) => row.source_year),
+      [1954, 1955]
+    );
+  } finally {
+    db.close();
+  }
+});
+
+test('issue expansion rejects navigation and archive footer links outside the issue', () => {
+  const html = `
+    <a href="./202607/content_7075912.html">国务院令</a>
+    <a href="./material/gwygb202620.pdf">本期公报 PDF</a>
+    <a href="../../../zhengce/gongbao/guowuyuan1954_1999/">历史导航</a>
+    <a href="/zhengce/2011-11/09/content_2619419.htm">页脚旧公报</a>`;
+  const links = discoverHistoricalLinks(html, 'https://www.gov.cn/gongbao/2026/issue_12866/', {
+    allowedHosts: ['www.gov.cn'],
+    parentKind: 'issue',
+    parentYear: 2026,
+    fromYear: 1949,
+    toYear: 2026
+  });
+  assert.deepEqual(links.map((item) => item.itemKind).sort(), ['document', 'issue']);
+  assert.ok(links.every((item) => item.url.includes('/gongbao/2026/issue_12866/')));
+});
+
+test('legacy issue pages may link to their same-year official PDF outside the page directory', () => {
+  const html = `
+    <a href="https://www.gov.cn/gongbao/shuju/1954/gwyb195401.pdf">1954年第1号 PDF</a>
+    <a href="/zhengce/2011-11/09/content_2619420.htm">相邻期号</a>`;
+  const links = discoverHistoricalLinks(html, 'https://www.gov.cn/zhengce/2011-11/09/content_2619419.htm', {
+    allowedHosts: ['www.gov.cn'],
+    parentKind: 'issue',
+    parentYear: 1954,
+    fromYear: 1949,
+    toYear: 2026
+  });
+  assert.equal(links.length, 1);
+  assert.equal(links[0].url, 'https://www.gov.cn/gongbao/shuju/1954/gwyb195401.pdf');
+  assert.equal(links[0].itemKind, 'issue');
+});
+
+test('HTML documents stop at needs_review and never become public articles', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/zhengce/2000-01/02/content_123.htm',
+      sourceName: '中华人民共和国国务院公报',
+      sourceType: 'html',
+      itemKind: 'document',
+      sourceYear: 2000,
+      title: '测试政策'
+    });
+    const html = `<!doctype html><html><head><title>国务院关于测试政策的通知</title></head><body>
+      <h1>国务院关于测试政策的通知</h1><p>2000年1月2日</p>
+      <p>为验证历史政策核验队列，本文件正文包含足够长度的政策内容，但不会自动公开。</p>
+      <p>各地区、各部门应结合实际认真贯彻执行，并持续公开实施情况和结果证据。</p>
+    </body></html>`;
+    const result = await runHistoricalQueue(db, { maxItems: 1, delayMs: 0 }, {
+      fetchText: async () => ({ body: html, contentType: 'text/html; charset=utf-8', finalUrl: 'https://www.gov.cn/zhengce/2000-01/02/content_123.htm' })
+    });
+    assert.equal(result.status, 'succeeded');
+    assert.equal(result.items[0].action, 'extracted_for_review');
+    const queued = db.prepare('SELECT * FROM historical_backfill_items').get();
+    assert.equal(queued.stage, 'needs_review');
+    assert.equal(queued.source_status, 'pending');
+    assert.equal(queued.lifecycle_status, 'pending');
+    assert.equal(queued.analysis_status, 'pending');
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('PDF issues are isolated for manual OCR and article segmentation', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/shuju/1954/gwyb195401.pdf',
+      sourceName: '中华人民共和国国务院公报',
+      sourceType: 'pdf',
+      itemKind: 'issue',
+      sourceYear: 1954
+    });
+    await runHistoricalQueue(db, { maxItems: 1, delayMs: 0 }, {
+      fetchText: async () => ({ body: '%PDF test', contentType: 'application/pdf', finalUrl: 'https://www.gov.cn/gongbao/shuju/1954/gwyb195401.pdf' })
+    });
+    assert.deepEqual(historicalQueueStats(db), { manual_review: 1 });
+    assert.equal(db.prepare('SELECT document_id FROM historical_backfill_items').get().document_id, null);
+  } finally {
+    db.close();
+  }
+});
+
+test('human review requires official evidence and a complete cycle/implementation analysis', () => {
+  const item = {
+    id: 1,
+    item_kind: 'document',
+    stage: 'needs_review',
+    source_url: 'https://www.gov.cn/zhengce/2000-01/02/content_123.htm',
+    title: '测试政策',
+    issuer: '国务院',
+    published_at: '2000-01-02',
+    document_number: ''
+  };
+  const valid = {
+    evidenceUrls: [item.source_url, 'https://www.stats.gov.cn/sj/example.html'],
+    lifecycleStatus: 'verified',
+    implementationStatus: 'verified',
+    outcomeStatus: 'not_found',
+    policyCycle: { announcedAt: '2000-01-02', effectiveAt: '2000-02-01', endedAt: null, assessment: '文件明确实施日期，未见废止公告。' },
+    implementationEvidence: [{
+      title: '实施细则',
+      sourceUrl: 'https://www.gov.cn/zhengce/2000-02/01/content_456.htm',
+      evidenceQuote: '自2000年2月1日起施行。',
+      observedAt: '2000-02-01'
+    }],
+    outcomeEvidence: [],
+    analysis: {
+      summary: '政策建立了测试制度。',
+      cycleAssessment: '已核对发文和实施日期，尚未发现废止文件。',
+      implementationAssessment: '实施细则构成落地证据，会议表态未计入。',
+      outcomeAssessment: '未找到足以证明政策结果的连续官方数据。',
+      ambiguities: ['结果数据缺失'],
+      evidenceQuotes: ['自2000年2月1日起施行。']
+    },
+    reviewNotes: '逐项核对原文、实施细则和统计口径；结果仍待后续证据。',
+    reviewedBy: 'editor-1',
+    reviewedAt: '2026-07-26T12:00:00+08:00'
+  };
+  const reviewed = validateHistoricalReview(item, valid);
+  assert.equal(reviewed.lifecycleStatus, 'verified');
+  assert.equal(reviewed.implementationEvidence.length, 1);
+  assert.throws(
+    () => validateHistoricalReview(item, { ...valid, evidenceUrls: ['https://example.com/a'] }),
+    /official \.gov\.cn/
+  );
+  assert.throws(
+    () => validateHistoricalReview(item, { ...valid, implementationEvidence: [] }),
+    /requires evidence/
+  );
+});

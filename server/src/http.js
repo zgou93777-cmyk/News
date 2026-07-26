@@ -5,7 +5,13 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { getSchemaVersion } = require('./db');
-const { getArticleDetail, listArticles, listCategories, recordView } = require('./repository');
+const {
+  getArchiveOverview,
+  getArticleDetail,
+  listArticles,
+  listCategories,
+  recordView
+} = require('./repository');
 
 const DOCUMENT_STATUSES = new Set(['draft', 'published', 'effective', 'superseded', 'expired']);
 const MIME_TYPES = new Map([
@@ -91,10 +97,27 @@ function parsePositiveInteger(value, name, fallback, maximum) {
   return parsed;
 }
 
+function parseArchiveYear(value, name, fallback = null) {
+  if (value === '') return fallback;
+  if (!/^\d{4}$/.test(value)) {
+    throw new HttpError(400, 'INVALID_QUERY', `${name} 必须是四位年份`);
+  }
+  const parsed = Number(value);
+  const maximum = new Date().getFullYear() + 1;
+  if (!Number.isSafeInteger(parsed) || parsed < 1949 || parsed > maximum) {
+    throw new HttpError(400, 'INVALID_QUERY', `${name} 必须在 1949 到 ${maximum} 之间`);
+  }
+  return parsed;
+}
+
 function parseArticleFilters(searchParams) {
   const q = singleQueryValue(searchParams, 'q').trim();
   const category = singleQueryValue(searchParams, 'category').trim();
   const status = singleQueryValue(searchParams, 'status').trim();
+  const reviewStatus = singleQueryValue(searchParams, 'reviewStatus').trim();
+  const hasForecastValue = singleQueryValue(searchParams, 'hasForecast').trim();
+  const fromYear = parseArchiveYear(singleQueryValue(searchParams, 'fromYear'), 'fromYear');
+  const toYear = parseArchiveYear(singleQueryValue(searchParams, 'toYear'), 'toYear');
   const page = parsePositiveInteger(singleQueryValue(searchParams, 'page'), 'page', 1, 1_000_000);
   const requestedPageSize = singleQueryValue(searchParams, 'pageSize') || singleQueryValue(searchParams, 'limit');
   const pageSize = parsePositiveInteger(requestedPageSize, 'pageSize', 12, 50);
@@ -108,7 +131,26 @@ function parseArticleFilters(searchParams) {
   if (status && !DOCUMENT_STATUSES.has(status)) {
     throw new HttpError(400, 'INVALID_QUERY', 'status 不是受支持的文档状态');
   }
-  return { q, category, status, page, pageSize };
+  if (reviewStatus && !new Set(['verified', 'partial', 'ambiguous', 'watching']).has(reviewStatus)) {
+    throw new HttpError(400, 'INVALID_QUERY', 'reviewStatus 不是受支持的复盘状态');
+  }
+  if (hasForecastValue && !['1', 'true'].includes(hasForecastValue)) {
+    throw new HttpError(400, 'INVALID_QUERY', 'hasForecast 只支持 1 或 true');
+  }
+  if (fromYear && toYear && fromYear > toYear) {
+    throw new HttpError(400, 'INVALID_QUERY', 'fromYear 不能晚于 toYear');
+  }
+  return {
+    q,
+    category,
+    status,
+    reviewStatus,
+    fromYear,
+    toYear,
+    hasForecast: Boolean(hasForecastValue),
+    page,
+    pageSize
+  };
 }
 
 function readJsonBody(req, maxBodyBytes) {
@@ -266,6 +308,12 @@ async function routeApi(req, res, url, context) {
 
   if (req.method === 'GET' && url.pathname === '/api/categories') {
     sendJson(res, 200, { data: listCategories(db) });
+    return true;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/archive-overview') {
+    const filters = parseArticleFilters(url.searchParams);
+    sendJson(res, 200, { data: getArchiveOverview(db, filters) });
     return true;
   }
 

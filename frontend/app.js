@@ -11,6 +11,16 @@
     observed: { label: "已观察到证据", icon: "eye" },
     confirmed: { label: "证据已确认", icon: "file-check-2" }
   };
+  const REVIEW_STATUS_KEYS = Object.freeze(["verified", "partial", "ambiguous", "watching"]);
+  const CURRENT_YEAR = new Date().getFullYear();
+  const ARCHIVE_ERAS = Object.freeze([
+    { key: "all", label: `1949—${CURRENT_YEAR}`, fromYear: 1949, toYear: CURRENT_YEAR },
+    { key: "foundation", label: "1949—1977", fromYear: 1949, toYear: 1977 },
+    { key: "reform", label: "1978—1999", fromYear: 1978, toYear: 1999 },
+    { key: "integration", label: "2000—2012", fromYear: 2000, toYear: 2012 },
+    { key: "modernization", label: "2013—2019", fromYear: 2013, toYear: 2019 },
+    { key: "current", label: `2020—${CURRENT_YEAR}`, fromYear: 2020, toYear: CURRENT_YEAR }
+  ]);
 
   const FALLBACK_IMAGE = "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1800&q=82";
   const VISITOR_STORAGE_KEY = "policy-monitor-visitor-id";
@@ -151,12 +161,25 @@
 
   const state = {
     articles: [],
+    archiveItems: [],
+    archivePagination: { page: 1, pageSize: 25, total: 0, totalPages: 0 },
+    archiveOverview: {
+      total: 0,
+      byStatus: { verified: 0, partial: 0, ambiguous: 0, watching: 0 },
+      earliestYear: null,
+      latestYear: null,
+      requestedStartYear: 1949,
+      requestedEndYear: CURRENT_YEAR,
+      byDecade: []
+    },
+    archiveFilteredOverview: null,
     categories: [],
     siteViews: { total: null, today: null },
     usingFallback: false,
     query: "",
     category: "all",
     status: "all",
+    era: "all",
     deferredInstallPrompt: null,
     routeVersion: 0
   };
@@ -589,25 +612,100 @@
   function extractPagination(payload) {
     const pagination = payload?.pagination || payload?.data?.pagination || {};
     const page = Number(pagination.page || 1);
-    const totalPages = Number(pagination.totalPages || pagination.total_pages || 1);
+    const pageSize = Number(pagination.pageSize || pagination.page_size || 25);
+    const total = Number(pagination.total || 0);
+    const totalPages = Number(pagination.totalPages || pagination.total_pages || 0);
     return {
       page: Number.isSafeInteger(page) && page > 0 ? page : 1,
-      totalPages: Number.isSafeInteger(totalPages) && totalPages > 0 ? totalPages : 1
+      pageSize: Number.isSafeInteger(pageSize) && pageSize > 0 ? pageSize : 25,
+      total: Number.isSafeInteger(total) && total >= 0 ? total : 0,
+      totalPages: Number.isSafeInteger(totalPages) && totalPages >= 0 ? totalPages : 0
     };
   }
 
-  async function fetchAllArticles() {
+  async function fetchRecentArticles() {
     const pageSize = 50;
-    const firstPayload = await fetchJSON(apiUrl(`articles?page=1&pageSize=${pageSize}`));
-    const articles = extractArticles(firstPayload);
-    const { totalPages } = extractPagination(firstPayload);
+    const payload = await fetchJSON(apiUrl(`articles?page=1&pageSize=${pageSize}&fromYear=1949`));
+    return extractArticles(payload);
+  }
 
-    for (let page = 2; page <= totalPages; page += 1) {
-      const payload = await fetchJSON(apiUrl(`articles?page=${page}&pageSize=${pageSize}`));
-      articles.push(...extractArticles(payload));
-    }
+  function archiveEra(key = state.era) {
+    return ARCHIVE_ERAS.find((item) => item.key === key) || ARCHIVE_ERAS[0];
+  }
 
-    return [...new Map(articles.map((article) => [article.id, article])).values()];
+  function archiveQuery(mode, page = 1) {
+    const era = archiveEra();
+    const params = new URLSearchParams({
+      page: String(page),
+      pageSize: "25",
+      fromYear: String(era.fromYear),
+      toYear: String(era.toYear)
+    });
+    if (state.query) params.set("q", state.query);
+    if (state.category !== "all") params.set("category", state.category);
+    if (state.status !== "all") params.set("reviewStatus", state.status);
+    if (mode === "outlook") params.set("hasForecast", "1");
+    return params;
+  }
+
+  async function fetchArchivePage(mode, page = 1) {
+    const query = archiveQuery(mode, page);
+    const overviewQuery = new URLSearchParams(query);
+    overviewQuery.delete("page");
+    overviewQuery.delete("pageSize");
+    const [payload, overviewPayload] = await Promise.all([
+      fetchJSON(apiUrl(`articles?${query}`)),
+      fetchJSON(apiUrl(`archive-overview?${overviewQuery}`))
+    ]);
+    return {
+      items: extractArticles(payload),
+      pagination: extractPagination(payload),
+      overview: overviewPayload?.data || overviewPayload
+    };
+  }
+
+  async function fetchArchiveOverview() {
+    const payload = await fetchJSON(apiUrl("archive-overview?fromYear=1949"));
+    return payload?.data || payload;
+  }
+
+  function overviewFromArticles(articles) {
+    const years = articles
+      .map((article) => Number(String(article.publishedAt || "").slice(0, 4)))
+      .filter(Number.isInteger);
+    const byStatus = Object.fromEntries(REVIEW_STATUS_KEYS.map((key) => [key, 0]));
+    for (const article of articles) byStatus[statusKey(article.review.status)] += 1;
+    return {
+      total: articles.length,
+      byStatus,
+      earliestYear: years.length ? Math.min(...years) : null,
+      latestYear: years.length ? Math.max(...years) : null,
+      requestedStartYear: 1949,
+      requestedEndYear: CURRENT_YEAR,
+      byDecade: []
+    };
+  }
+
+  function fallbackArchivePage(mode, page = 1) {
+    const era = archiveEra();
+    const query = state.query.trim().toLocaleLowerCase("zh-CN");
+    const filtered = state.articles.filter((article) => {
+      const year = Number(String(article.publishedAt || "").slice(0, 4));
+      const haystack = [article.title, article.summary, article.source, article.category, ...article.tags].join(" ").toLocaleLowerCase("zh-CN");
+      return (!query || haystack.includes(query))
+        && (state.category === "all" || article.category === state.category)
+        && (state.status === "all" || article.review.status === state.status)
+        && year >= era.fromYear && year <= era.toYear
+        && (mode !== "outlook" || article.predictions.length > 0);
+    });
+    const pageSize = 25;
+    const totalPages = Math.ceil(filtered.length / pageSize);
+    const safePage = totalPages ? Math.min(page, totalPages) : 1;
+    return {
+      items: filtered.slice((safePage - 1) * pageSize, safePage * pageSize),
+      pagination: { page: safePage, pageSize, total: filtered.length, totalPages },
+      overview: overviewFromArticles(filtered)
+    };
   }
 
   function extractCategories(payload, articles) {
@@ -775,10 +873,10 @@
     const featured = state.articles.find((article) => article.isFeatured || article.importance === "major") || state.articles[0];
     if (!featured) return renderEmpty("暂无政策内容", "数据同步完成后将在这里显示最新分析。");
     const remaining = state.articles.filter((article) => article.id !== featured.id);
-    const counts = Object.keys(STATUS_META).reduce((acc, key) => {
-      acc[key] = state.articles.filter((article) => article.review.status === key).length;
-      return acc;
-    }, {});
+    const counts = state.archiveOverview.byStatus;
+    const coverage = state.archiveOverview.earliestYear
+      ? `当前已核验覆盖 ${state.archiveOverview.earliestYear}—${state.archiveOverview.latestYear}`
+      : "公开核验记录正在整理";
     const tracking = [...state.articles]
       .sort((a, b) => new Date(b.review.verifiedAt) - new Date(a.review.verifiedAt))
       .slice(0, 4);
@@ -806,16 +904,16 @@
 
           <section class="snapshot-strip" aria-label="政策复盘状态概览">
             <div class="snapshot-intro">
-              <div class="snapshot-intro-copy"><strong>当前研判</strong><span>${state.articles.length} 篇分析持续复核</span></div>
+              <div class="snapshot-intro-copy"><strong>全范围研判</strong><span>目标 1949—${CURRENT_YEAR} · ${coverage} · ${state.archiveOverview.total} 篇公开分析</span></div>
               <div class="site-audience" aria-label="网站访客统计">
                 <span>累计访客 <b data-site-view="total">${formatViewNumber(state.siteViews.total)}</b></span>
                 <span>今日访客 <b data-site-view="today">${formatViewNumber(state.siteViews.today)}</b></span>
               </div>
             </div>
-            <div class="snapshot-item status-verified"><strong>${counts.verified}</strong><small>已验证</small></div>
-            <div class="snapshot-item status-partial"><strong>${counts.partial}</strong><small>部分兑现</small></div>
-            <div class="snapshot-item status-ambiguous"><strong>${counts.ambiguous}</strong><small>存在歧义</small></div>
-            <div class="snapshot-item status-watching"><strong>${counts.watching}</strong><small>待观察</small></div>
+            <a class="snapshot-item status-verified" href="#/tracking?status=verified&era=all" aria-label="查看已验证文章，共 ${counts.verified} 篇"><strong>${counts.verified}</strong><small>已验证</small></a>
+            <a class="snapshot-item status-partial" href="#/tracking?status=partial&era=all" aria-label="查看部分兑现文章，共 ${counts.partial} 篇"><strong>${counts.partial}</strong><small>部分兑现</small></a>
+            <a class="snapshot-item status-ambiguous" href="#/tracking?status=ambiguous&era=all" aria-label="查看存在歧义文章，共 ${counts.ambiguous} 篇"><strong>${counts.ambiguous}</strong><small>存在歧义</small></a>
+            <a class="snapshot-item status-watching" href="#/tracking?status=watching&era=all" aria-label="查看待观察文章，共 ${counts.watching} 篇"><strong>${counts.watching}</strong><small>待观察</small></a>
           </section>
 
           <div class="home-grid">
@@ -852,18 +950,6 @@
     return `<div class="empty-state"><div><i data-lucide="file-search" aria-hidden="true"></i><h2>${escapeHTML(title)}</h2><p>${escapeHTML(copy)}</p></div></div>`;
   }
 
-  function filteredArticles(mode) {
-    const query = state.query.trim().toLocaleLowerCase("zh-CN");
-    return state.articles.filter((article) => {
-      const haystack = [article.title, article.summary, article.source, article.category, ...article.tags].join(" ").toLocaleLowerCase("zh-CN");
-      const matchesQuery = !query || haystack.includes(query);
-      const matchesCategory = state.category === "all" || article.category === state.category;
-      const matchesStatus = state.status === "all" || article.review.status === state.status;
-      const matchesMode = mode === "outlook" ? article.predictions.length > 0 : true;
-      return matchesQuery && matchesCategory && matchesStatus && matchesMode;
-    });
-  }
-
   function archiveTitle(mode) {
     if (mode === "tracking") return { title: "落地追踪", copy: "把早期判断与后续公开证据放回同一条时间线，持续标注兑现程度与歧义。" };
     if (mode === "outlook") return { title: "前瞻研判", copy: "以可观察的政策信号和触发条件表达预判，并在新证据出现后回看判断。" };
@@ -871,15 +957,31 @@
   }
 
   function renderArchive(mode = "archive") {
-    const results = filteredArticles(mode);
+    const results = state.archiveItems;
     const heading = archiveTitle(mode);
+    const era = archiveEra();
+    const overview = state.archiveFilteredOverview || state.archiveOverview;
+    const actualCoverage = overview.earliestYear
+      ? `已公开核验记录覆盖 ${overview.earliestYear}—${overview.latestYear}`
+      : "该范围尚无通过核验的公开记录";
+    const page = state.archivePagination.page;
+    const totalPages = state.archivePagination.totalPages;
+    const pageHref = (target) => {
+      const params = new URLSearchParams();
+      if (state.query) params.set("q", state.query);
+      if (state.category !== "all") params.set("category", state.category);
+      if (state.status !== "all") params.set("status", state.status);
+      if (state.era !== "all") params.set("era", state.era);
+      if (target > 1) params.set("page", String(target));
+      return `#/${mode}${params.size ? `?${params}` : ""}`;
+    };
     return `
       <div class="content-page">
         <div class="page-width">
           ${demoNotice()}
           <header class="page-heading">
             <div><p class="eyebrow">POLICY ARCHIVE</p><h1>${heading.title}</h1><p>${heading.copy}</p></div>
-            <div class="page-heading-meta">共 ${results.length} 条记录</div>
+            <div class="page-heading-meta">目标范围 ${era.label}<br>${actualCoverage}<br>共 ${state.archivePagination.total} 条公开记录</div>
           </header>
           <section class="filter-panel" aria-label="政策筛选">
             <label class="filter-search">
@@ -888,8 +990,9 @@
               <input id="archive-search" type="search" value="${escapeHTML(state.query)}" placeholder="搜索标题、部门或关键词">
             </label>
             <div class="filter-selects">
+              <label><span class="sr-only">历史阶段</span><select id="era-filter">${ARCHIVE_ERAS.map((item) => `<option value="${item.key}"${state.era === item.key ? " selected" : ""}>${item.label}</option>`).join("")}</select></label>
               <label><span class="sr-only">政策领域</span><select id="category-filter"><option value="all">全部领域</option>${state.categories.map((category) => `<option value="${escapeHTML(category)}"${state.category === category ? " selected" : ""}>${escapeHTML(category)}</option>`).join("")}</select></label>
-              <label><span class="sr-only">复盘状态</span><select id="status-filter"><option value="all">全部状态</option>${Object.entries(STATUS_META).map(([key, meta]) => `<option value="${key}"${state.status === key ? " selected" : ""}>${meta.label}</option>`).join("")}</select></label>
+              <label><span class="sr-only">复盘状态</span><select id="status-filter"><option value="all">全部状态</option>${REVIEW_STATUS_KEYS.map((key) => `<option value="${key}"${state.status === key ? " selected" : ""}>${STATUS_META[key].label}</option>`).join("")}</select></label>
             </div>
           </section>
           ${results.length ? `<section class="archive-list" aria-label="政策分析列表">${results.map((article) => `
@@ -901,7 +1004,12 @@
                 <p>${escapeHTML(article.summary)}</p>
               </div>
               <div class="archive-side">${statusBadge(article.review.status)}<span class="archive-source">${escapeHTML(article.source)}</span>${renderArticleViews(article)}</div>
-            </article>`).join("")}</section>` : renderEmpty("没有匹配的政策", "尝试清除关键词或调整筛选条件。")}
+            </article>`).join("")}</section>` : renderEmpty("没有匹配的政策", "该范围可能仍在核验中，或可尝试清除关键词和调整筛选条件。")}
+          ${totalPages > 1 ? `<nav class="archive-pagination" aria-label="政策库分页">
+            <a class="pagination-button${page <= 1 ? " is-disabled" : ""}" href="${pageHref(Math.max(1, page - 1))}"${page <= 1 ? ' aria-disabled="true" tabindex="-1"' : ""}><i data-lucide="chevron-left" aria-hidden="true"></i><span>上一页</span></a>
+            <span>第 ${page} / ${totalPages} 页</span>
+            <a class="pagination-button${page >= totalPages ? " is-disabled" : ""}" href="${pageHref(Math.min(totalPages, page + 1))}"${page >= totalPages ? ' aria-disabled="true" tabindex="-1"' : ""}><span>下一页</span><i data-lucide="chevron-right" aria-hidden="true"></i></a>
+          </nav>` : ""}
         </div>
       </div>`;
   }
@@ -1481,7 +1589,7 @@
   }
 
   async function getArticle(id) {
-    const existing = state.articles.find((article) => article.id === id);
+    const existing = state.articles.find((article) => String(article.id) === String(id));
     if (state.usingFallback) return existing;
     try {
       const payload = await fetchJSON(apiUrl(`articles/${encodeURIComponent(id)}`));
@@ -1497,8 +1605,9 @@
       if (normalized.views.total == null && normalized.views.today == null && existing?.views) {
         normalized.views = mergeViews(normalized.views, existing.views);
       }
-      const index = state.articles.findIndex((article) => article.id === id);
+      const index = state.articles.findIndex((article) => String(article.id) === String(id));
       if (index >= 0) state.articles[index] = normalized;
+      else state.articles.push(normalized);
       return normalized;
     } catch (error) {
       console.warn("Article detail API unavailable", error);
@@ -1524,10 +1633,6 @@
     stopAudioPlayback({ resetPosition: true, clearArticle: true, silent: true });
     document.body.classList.toggle("is-listening", audioRoute);
 
-    if (params.has("tag")) {
-      state.query = params.get("tag") || "";
-    }
-
     let html;
     let articleForView = null;
     if ((route === "articles" || route === "listen") && parts[1]) {
@@ -1539,12 +1644,37 @@
       html = article
         ? (audioRoute ? renderAudioPlayer(article) : renderArticle(article))
         : `<div class="content-page"><div class="page-width">${renderEmpty("未找到这篇分析", "它可能已归档，或链接地址不完整。")}</div></div>`;
-    } else if (route === "archive") {
-      html = renderArchive("archive");
-    } else if (route === "tracking") {
-      html = renderArchive("tracking");
-    } else if (route === "outlook") {
-      html = renderArchive("outlook");
+    } else if (["archive", "tracking", "outlook"].includes(route)) {
+      state.query = (params.get("q") || params.get("tag") || "").trim();
+      state.category = params.get("category") || "all";
+      state.status = REVIEW_STATUS_KEYS.includes(params.get("status")) ? params.get("status") : "all";
+      state.era = ARCHIVE_ERAS.some((item) => item.key === params.get("era")) ? params.get("era") : "all";
+      const requestedPage = Number(params.get("page") || 1);
+      const page = Number.isSafeInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+      elements.app.innerHTML = `<div class="loading-screen"><span class="loading-mark">政</span><p>正在读取已核验记录…</p></div>`;
+      renderIcons();
+      try {
+        const result = state.usingFallback
+          ? fallbackArchivePage(route, page)
+          : await fetchArchivePage(route, page);
+        if (version !== state.routeVersion) return;
+        state.archiveItems = result.items;
+        state.archivePagination = result.pagination;
+        state.archiveFilteredOverview = result.overview;
+        for (const article of result.items) {
+          const existingIndex = state.articles.findIndex((item) => String(item.id) === String(article.id));
+          if (existingIndex >= 0) state.articles[existingIndex] = article;
+          else state.articles.push(article);
+        }
+        html = renderArchive(route);
+      } catch (error) {
+        console.warn("Archive API unavailable", error);
+        if (version !== state.routeVersion) return;
+        state.archiveItems = [];
+        state.archivePagination = { page: 1, pageSize: 25, total: 0, totalPages: 0 };
+        state.archiveFilteredOverview = null;
+        html = `<div class="content-page"><div class="page-width"><div class="error-state"><div><i data-lucide="triangle-alert" aria-hidden="true"></i><h2>政策库暂时无法读取</h2><p>为避免展示不完整或未经核验的数据，本次没有使用本地估算结果。</p></div></div></div></div>`;
+      }
     } else if (route === "about") {
       html = renderAbout();
     } else {
@@ -1571,21 +1701,44 @@
     const archiveSearch = document.querySelector("#archive-search");
     const categoryFilter = document.querySelector("#category-filter");
     const statusFilter = document.querySelector("#status-filter");
+    const eraFilter = document.querySelector("#era-filter");
+    const currentRoute = routeInfo().parts[0] || "archive";
+    const updateArchiveLocation = (updates = {}) => {
+      const params = new URLSearchParams();
+      const next = {
+        q: state.query,
+        category: state.category,
+        status: state.status,
+        era: state.era,
+        ...updates
+      };
+      if (next.q) params.set("q", next.q);
+      if (next.category && next.category !== "all") params.set("category", next.category);
+      if (next.status && next.status !== "all") params.set("status", next.status);
+      if (next.era && next.era !== "all") params.set("era", next.era);
+      const target = `#/${currentRoute}${params.size ? `?${params}` : ""}`;
+      if (location.hash === target) renderRoute({ preserveScroll: true });
+      else location.hash = target;
+    };
     let searchTimer;
     archiveSearch?.addEventListener("input", (event) => {
       window.clearTimeout(searchTimer);
       searchTimer = window.setTimeout(() => {
         state.query = event.target.value;
-        renderRoute({ preserveScroll: true });
+        updateArchiveLocation({ q: state.query });
       }, 220);
     });
     categoryFilter?.addEventListener("change", (event) => {
       state.category = event.target.value;
-      renderRoute({ preserveScroll: true });
+      updateArchiveLocation({ category: state.category });
     });
     statusFilter?.addEventListener("change", (event) => {
       state.status = event.target.value;
-      renderRoute({ preserveScroll: true });
+      updateArchiveLocation({ status: state.status });
+    });
+    eraFilter?.addEventListener("change", (event) => {
+      state.era = event.target.value;
+      updateArchiveLocation({ era: state.era });
     });
     bindAudioControls();
   }
@@ -1838,8 +1991,9 @@
       event.preventDefault();
       state.query = elements.searchInput.value.trim();
       closeSearch();
-      location.hash = "#/archive";
-      if (location.hash === "#/archive") renderRoute();
+      const target = `#/archive${state.query ? `?q=${encodeURIComponent(state.query)}` : ""}`;
+      if (location.hash === target) renderRoute();
+      else location.hash = target;
     });
     window.addEventListener("hashchange", () => renderRoute());
     window.addEventListener("pagehide", () => stopAudioPlayback());
@@ -1910,9 +2064,10 @@
 
     registerServiceWorker().catch((error) => console.warn("Service worker registration failed", error));
     try {
-      const [articleResult, categoryResult] = await Promise.allSettled([
-        fetchAllArticles(),
-        fetchJSON(apiUrl("categories"))
+      const [articleResult, categoryResult, overviewResult] = await Promise.allSettled([
+        fetchRecentArticles(),
+        fetchJSON(apiUrl("categories")),
+        fetchArchiveOverview()
       ]);
       const articles = articleResult.status === "fulfilled" ? articleResult.value : [];
       if (!articles.length) throw new Error("暂无可用 API 数据");
@@ -1920,11 +2075,15 @@
       state.categories = categoryResult.status === "fulfilled"
         ? extractCategories(categoryResult.value, state.articles)
         : extractCategories([], state.articles);
+      state.archiveOverview = overviewResult.status === "fulfilled"
+        ? overviewResult.value
+        : overviewFromArticles(state.articles);
     } catch (error) {
       console.warn("Using frontend demonstration data", error);
       state.usingFallback = true;
       state.articles = FALLBACK_ARTICLES.map(normalizeArticle).sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
       state.categories = extractCategories([], state.articles);
+      state.archiveOverview = overviewFromArticles(state.articles);
     }
 
     await renderRoute();

@@ -1,12 +1,12 @@
 "use strict";
 
-const CACHE_VERSION = "policy-monitor-v7";
+const CACHE_VERSION = "policy-monitor-v9";
 const SCOPE_URL = new URL(self.registration.scope);
 const SHELL_URLS = [
   new URL("./", SCOPE_URL).toString(),
   new URL("index.html", SCOPE_URL).toString(),
-  new URL("styles.css?v=20260720-views", SCOPE_URL).toString(),
-  new URL("app.js?v=20260726-completeness", SCOPE_URL).toString(),
+  new URL("styles.css?v=20260726-archive2", SCOPE_URL).toString(),
+  new URL("app.js?v=20260726-history", SCOPE_URL).toString(),
   new URL("manifest.webmanifest?v=20260720", SCOPE_URL).toString(),
   new URL("assets/icon.svg", SCOPE_URL).toString(),
   new URL("assets/icon-180.png", SCOPE_URL).toString(),

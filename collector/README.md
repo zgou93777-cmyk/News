@@ -44,6 +44,29 @@ node src/cli.js --reconcile-relevance --dry-run
 node src/cli.js --reconcile-relevance --apply
 ```
 
+## 1949 至今的历史回填
+
+历史回填与日常采集隔离。发现和提取不会写入公开 `documents` 表，也不会发送通知；自动处理的 HTML 最多进入 `needs_review`，公报 PDF 因涉及 OCR、版面和多篇文件拆分，只进入 `manual_review`。
+
+```bash
+# 读取国务院公报官方导航，记录真实缺口并建立私有队列
+node src/cli.js --historical-discover --from-year 1949 --max-items 100
+
+# 每次串行处理 2 条，条目之间等待 5 秒
+node src/cli.js --historical-process --max-items 2 --delay-ms 5000
+
+# 查看私有队列，不影响首页或公开 API
+node src/cli.js --historical-status
+
+# 使用结构化审校文件复核一篇；即使通过也只进入私有 ready 状态
+node src/cli.js --historical-review 123 --review-file /secure/reviews/123.json --dry-run
+node src/cli.js --historical-review 123 --review-file /secure/reviews/123.json
+```
+
+审校文件必须同时包含：官方 `.gov.cn` 原文及补充证据 URL、标题/机构/发文日期、政策生效与废止周期、实施和结果证据状态、逐字证据摘录、分析摘要、歧义、审校说明和审校人。会议或文件表态不能作为实施证据；“未找到结果证据”必须明确记录为 `not_found`，不能改写成已兑现。数据库触发器会拒绝把字段不完整的条目标记为 `ready` 或 `published`。
+
+当前国务院公报官方导航始于 1954 年，且未列出 1967—1979 年；1949—1953 年需要另行寻找中央人民政府时期官方档案。因此首页只显示实际通过核验的最早和最晚年份，不宣称已经完整覆盖 1949 至今。
+
 相关性修复不删除数据。`--apply` 只把未通过门槛的自动采集文档设为 `draft`、把重要性降为 `1`，并新增“采集相关性复核：低相关降级”歧义记录。原文、URL、分析版本、预测和已有证据全部保留；重复执行不会重复写审计记录。
 
 若页面不能稳定提取标题、发布机构或发布日期，采集器会拒绝入库，并要求通过 `--title`、`--issuer`、`--published-at` 补足，不会用当前时间冒充发布日期。
@@ -76,19 +99,21 @@ sudo install -m 0600 ../deploy/policy-monitor.env.example /etc/policy-monitor/po
 
 ## 定时运行
 
-仓库内提供 `systemd/policy-monitor-collector.service` 和 `.timer`。部署目录为 `/opt/policy-monitor`、服务账号为 `policy-monitor` 时：
+仓库内提供日常采集和历史低速队列两组 systemd 单元。部署目录为 `/opt/policy-monitor`、服务账号为 `policy-monitor` 时：
 
 ```bash
 sudo cp systemd/policy-monitor-collector.service /etc/systemd/system/
 sudo cp systemd/policy-monitor-collector.timer /etc/systemd/system/
+sudo cp systemd/policy-monitor-historical.service /etc/systemd/system/
+sudo cp systemd/policy-monitor-historical.timer /etc/systemd/system/
 sudo cp ../deploy/policy-monitor-alert@.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now policy-monitor-collector.timer
+sudo systemctl enable --now policy-monitor-collector.timer policy-monitor-historical.timer
 sudo systemctl start policy-monitor-collector.service
 sudo systemctl status policy-monitor-collector.service --no-pager
 ```
 
-定时器每个偶数小时的 15 分运行一次，并在关机错过后补跑。常驻的是 systemd 定时器，不是 Node 进程；平时只占极少的定时器元数据，采集期间才短时占用 CPU 和内存。服务限制为最多 320 MiB 内存、10 分钟执行时间。
+日常采集定时器每个偶数小时的 15 分运行一次；历史队列每天仅串行处理 2 条，并加入请求间隔。常驻的是 systemd 定时器，不是 Node 进程；平时只占极少的定时器元数据，采集期间才短时占用 CPU 和内存。
 
 API 或采集任务异常退出时，`policy-monitor-alert@.service` 会使用同一套受保护环境变量发送钉钉告警；告警文本不包含 webhook 或签名密钥。
 

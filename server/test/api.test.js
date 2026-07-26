@@ -40,7 +40,7 @@ test('health and categories expose database state', async () => {
   assert.equal(healthResponse.headers.get('x-content-type-options'), 'nosniff');
   const health = await healthResponse.json();
   assert.equal(health.status, 'ok');
-  assert.equal(health.schemaVersion, '2');
+  assert.equal(health.schemaVersion, '3');
   assert.equal(health.pushEnabled, true);
 
   const categories = await (await fetch(`${origin}/api/categories`)).json();
@@ -75,6 +75,29 @@ test('article list supports search, filters and pagination', async () => {
   const invalid = await fetch(`${origin}/api/articles?status=nope`);
   assert.equal(invalid.status, 400);
   assert.equal((await invalid.json()).error.code, 'INVALID_QUERY');
+});
+
+test('archive overview and article list support review status and year ranges', async () => {
+  const overviewResponse = await fetch(`${origin}/api/archive-overview?fromYear=1949`);
+  assert.equal(overviewResponse.status, 200);
+  const overview = (await overviewResponse.json()).data;
+  assert.equal(overview.total, 3);
+  assert.equal(overview.requestedStartYear, 1949);
+  assert.equal(overview.earliestYear, 2022);
+  assert.equal(Object.values(overview.byStatus).reduce((sum, count) => sum + count, 0), 3);
+
+  const ambiguous = await (await fetch(`${origin}/api/articles?reviewStatus=ambiguous&fromYear=1949&pageSize=50`)).json();
+  assert.ok(ambiguous.data.length > 0);
+  assert.ok(ambiguous.data.every((article) => article.review.status === 'ambiguous'));
+
+  const historical = await (await fetch(`${origin}/api/articles?fromYear=1949&toYear=2024&pageSize=50`)).json();
+  assert.equal(historical.pagination.total, 1);
+  assert.equal(historical.data[0].publishedAt.slice(0, 4), '2022');
+
+  for (const query of ['fromYear=1948', 'toYear=20x6', 'fromYear=2026&toYear=2025', 'reviewStatus=nope']) {
+    const invalid = await fetch(`${origin}/api/articles?${query}`);
+    assert.equal(invalid.status, 400);
+  }
 });
 
 test('article list hides drafts by default but supports an explicit draft filter', async () => {

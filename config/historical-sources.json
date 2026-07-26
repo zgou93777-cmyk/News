@@ -1,0 +1,34 @@
+[
+  {
+    "id": "state-council-gazette-legacy",
+    "name": "中华人民共和国国务院公报",
+    "navigationUrl": "https://www.gov.cn/images/gbIssue.js",
+    "officialUrl": "https://www.gov.cn/zhengce/gongbao/guowuyuan1954_1999/",
+    "coverageStartYear": 1954,
+    "coverageEndYear": 1999,
+    "requestedStartYear": 1949,
+    "allowedHosts": ["www.gov.cn"],
+    "knownCoverageGaps": [
+      {
+        "fromYear": 1949,
+        "toYear": 1953,
+        "reason": "国务院公报始于1954年，需另行核验中央人民政府时期官方档案。"
+      },
+      {
+        "fromYear": 1967,
+        "toYear": 1979,
+        "reason": "中国政府网官方历史公报期号表未列出这些年份，不能据此声称已覆盖。"
+      }
+    ]
+  },
+  {
+    "id": "state-council-gazette-modern",
+    "name": "中华人民共和国国务院公报",
+    "navigationUrl": "https://www.gov.cn/gongbao/gbgl.json",
+    "officialUrl": "https://www.gov.cn/gongbao/currentissue.htm",
+    "coverageStartYear": 2000,
+    "requestedStartYear": 1949,
+    "allowedHosts": ["www.gov.cn"],
+    "knownCoverageGaps": []
+  }
+]

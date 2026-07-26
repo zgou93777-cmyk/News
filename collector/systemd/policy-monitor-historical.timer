@@ -1,0 +1,11 @@
+[Unit]
+Description=Process two historical archive items per day
+
+[Timer]
+OnCalendar=*-*-* 03:40:00
+Persistent=true
+RandomizedDelaySec=15min
+Unit=policy-monitor-historical.service
+
+[Install]
+WantedBy=timers.target

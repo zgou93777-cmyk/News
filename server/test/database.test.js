@@ -16,8 +16,34 @@ const REQUIRED_TABLES = [
   'ambiguities',
   'assessment_snapshots',
   'push_subscriptions',
-  'sync_runs'
+  'sync_runs',
+  'historical_backfill_items'
 ];
+
+test('historical backfill records are private and verification-gated', () => {
+  const db = openDatabase(':memory:');
+  try {
+    db.prepare(`
+      INSERT INTO historical_backfill_items (
+        source_url, source_name, source_year, item_kind, stage
+      ) VALUES (?, ?, ?, 'document', 'needs_review')
+    `).run('https://www.gov.cn/gongbao/example.htm', '国务院公报', 1954);
+    const row = db.prepare('SELECT * FROM historical_backfill_items').get();
+    assert.equal(row.source_status, 'pending');
+    assert.equal(row.analysis_status, 'pending');
+    assert.equal(row.document_id, null);
+    assert.throws(
+      () => db.prepare("UPDATE historical_backfill_items SET stage = 'public' WHERE id = ?").run(row.id),
+      /CHECK constraint failed/
+    );
+    assert.throws(
+      () => db.prepare("UPDATE historical_backfill_items SET stage = 'ready' WHERE id = ?").run(row.id),
+      /not fully verified/
+    );
+  } finally {
+    db.close();
+  }
+});
 
 test('schema contains all traceability tables', () => {
   const db = openDatabase(':memory:');

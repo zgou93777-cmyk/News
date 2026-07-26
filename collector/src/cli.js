@@ -8,6 +8,8 @@ const { DatabaseSync } = require('node:sqlite');
 const { loadConfig } = require('../../server/src/config');
 const { openDatabase } = require('../../server/src/db');
 const { runCoverBackfill } = require('./cover-backfill');
+const { historicalQueueStats, runHistoricalDiscovery, runHistoricalQueue } = require('./historical-backfill');
+const { runHistoricalReview } = require('./historical-review');
 const { runCollection, runSeedBackfill } = require('./pipeline');
 const { runReconcileLineage } = require('./reconcile-lineage');
 const { runReconcileRelevance } = require('./reconcile');
@@ -19,7 +21,10 @@ const VALUE_OPTIONS = new Map([
   ['--original-url', 'originalUrl'], ['--content-type', 'contentType'],
   ['--analysis', 'analysisMode'], ['--max-items', 'maxItems'],
   ['--public-base-url', 'publicBaseUrl'], ['--db-path', 'dbPath'],
-  ['--family-slug', 'familySlug'], ['--family-title', 'familyTitle']
+  ['--family-slug', 'familySlug'], ['--family-title', 'familyTitle'],
+  ['--historical-source', 'historicalSource'], ['--historical-sources-file', 'historicalSourcesFile'],
+  ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'],
+  ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile']
 ]);
 
 const HELP = `Usage:
@@ -31,6 +36,10 @@ const HELP = `Usage:
   node src/cli.js --backfill-images [--dry-run|--apply] [--max-items 100]
   node src/cli.js --reconcile-relevance [--dry-run|--apply]
   node src/cli.js --reconcile-lineage [--dry-run|--apply]
+  node src/cli.js --historical-discover [--from-year 1949] [--to-year YYYY] [--max-items 100]
+  node src/cli.js --historical-process [--max-items 2] [--delay-ms 1500]
+  node src/cli.js --historical-status
+  node src/cli.js --historical-review <queue-id> --review-file <review.json> [--dry-run]
 
 Options:
   --dry-run                 Fetch and analyze without persistent writes or notifications
@@ -43,6 +52,14 @@ Options:
   --family-title TITLE      Required only when creating a new family
   --db-path PATH            Override DB_PATH
   --public-base-url URL     Override PUBLIC_BASE_URL for notification links
+  --historical-discover    Discover official archive entries into the private review queue
+  --historical-process     Slowly fetch/extract queued entries; never publishes them
+  --historical-status      Show private queue counts by stage
+  --historical-review ID   Validate a structured human review; moves only to private ready state
+  --review-file PATH       Review evidence, policy cycle, implementation, outcome and analysis JSON
+  --from-year YYYY         Historical discovery lower bound; minimum 1949
+  --to-year YYYY           Historical discovery upper bound
+  --delay-ms N             Delay between historical queue items; default 1500
 `;
 
 function parseArguments(argv) {
@@ -57,6 +74,9 @@ function parseArguments(argv) {
     else if (argument === '--backfill-images' || argument === '--backfill-covers') options.backfillImages = true;
     else if (argument === '--reconcile-relevance') options.reconcileRelevance = true;
     else if (argument === '--reconcile-lineage') options.reconcileLineage = true;
+    else if (argument === '--historical-discover') options.historicalDiscover = true;
+    else if (argument === '--historical-process') options.historicalProcess = true;
+    else if (argument === '--historical-status') options.historicalStatus = true;
     else if (argument === '--apply') options.apply = true;
     else if (VALUE_OPTIONS.has(argument)) {
       const value = argv[index + 1];
@@ -76,10 +96,29 @@ function parseArguments(argv) {
       throw new Error('--max-items must be an integer from 1 to 100');
     }
   }
+  const currentYear = new Date().getFullYear();
+  for (const key of ['fromYear', 'toYear']) {
+    if (options[key] === undefined) continue;
+    options[key] = Number(options[key]);
+    if (!Number.isSafeInteger(options[key]) || options[key] < 1949 || options[key] > currentYear + 1) {
+      throw new Error(`--${key === 'fromYear' ? 'from-year' : 'to-year'} must be between 1949 and ${currentYear + 1}`);
+    }
+  }
+  if (options.fromYear && options.toYear && options.fromYear > options.toYear) {
+    throw new Error('--from-year cannot be later than --to-year');
+  }
+  if (options.delayMs !== undefined) {
+    options.delayMs = Number(options.delayMs);
+    if (!Number.isSafeInteger(options.delayMs) || options.delayMs < 0 || options.delayMs > 60_000) {
+      throw new Error('--delay-ms must be an integer from 0 to 60000');
+    }
+  }
   const modes = [
     Boolean(options.url), Boolean(options.file), Boolean(options.allSources),
     Boolean(options.backfillSeed), Boolean(options.backfillImages),
-    Boolean(options.reconcileRelevance), Boolean(options.reconcileLineage)
+    Boolean(options.reconcileRelevance), Boolean(options.reconcileLineage),
+    Boolean(options.historicalDiscover), Boolean(options.historicalProcess), Boolean(options.historicalStatus),
+    Boolean(options.historicalReview)
   ].filter(Boolean).length;
   if (modes > 1) {
     throw new Error('choose only one collection, backfill, or reconciliation mode');
@@ -131,6 +170,14 @@ async function main() {
       ? await runSeedBackfill(db, options)
       : options.backfillImages
         ? await runCoverBackfill(db, options)
+      : options.historicalDiscover
+        ? await runHistoricalDiscovery(db, { ...options, notify: false })
+      : options.historicalProcess
+        ? await runHistoricalQueue(db, { ...options, notify: false })
+      : options.historicalStatus
+        ? { status: 'succeeded', queue: historicalQueueStats(db) }
+      : options.historicalReview
+        ? runHistoricalReview(db, options)
       : options.reconcileRelevance
         ? runReconcileRelevance(db, options)
         : options.reconcileLineage

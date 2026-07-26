@@ -3,7 +3,7 @@
 const assert = require('node:assert/strict');
 const test = require('node:test');
 const { openDatabase } = require('../src/db');
-const { getArticleDetail, listArticles } = require('../src/repository');
+const { getArchiveOverview, getArticleDetail, listArticles } = require('../src/repository');
 const { seedDatabase } = require('../src/seed');
 
 function filters(overrides = {}) {
@@ -40,6 +40,25 @@ test('repository excludes drafts unless draft status is explicitly requested', (
     assert.equal(draftResult.total, 1);
     assert.equal(draftResult.articles[0].id, draftId);
     assert.equal(draftResult.articles[0].status, 'draft');
+  } finally {
+    db.close();
+  }
+});
+
+test('archive overview counts only published records and exposes honest coverage years', () => {
+  const db = openDatabase(':memory:');
+  try {
+    seedDatabase(db);
+    const overview = getArchiveOverview(db, { fromYear: 1949 });
+    assert.equal(overview.total, 3);
+    assert.equal(overview.earliestYear, 2022);
+    assert.equal(overview.latestYear, 2026);
+    assert.equal(overview.requestedStartYear, 1949);
+    assert.equal(Object.values(overview.byStatus).reduce((sum, count) => sum + count, 0), 3);
+
+    const filtered = listArticles(db, filters({ fromYear: 1949, toYear: 2024 }));
+    assert.equal(filtered.total, 1);
+    assert.equal(filtered.articles[0].publishedAt.slice(0, 4), '2022');
   } finally {
     db.close();
   }

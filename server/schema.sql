@@ -208,10 +208,100 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 
 CREATE INDEX IF NOT EXISTS idx_sync_runs_started ON sync_runs(started_at DESC);
 
+CREATE TABLE IF NOT EXISTS historical_backfill_items (
+  id INTEGER PRIMARY KEY,
+  parent_id INTEGER REFERENCES historical_backfill_items(id),
+  source_url TEXT NOT NULL UNIQUE,
+  source_name TEXT NOT NULL,
+  source_type TEXT NOT NULL DEFAULT 'html' CHECK (source_type IN ('html', 'pdf', 'json', 'unknown')),
+  item_kind TEXT NOT NULL DEFAULT 'document' CHECK (item_kind IN ('index', 'issue', 'document')),
+  source_year INTEGER CHECK (source_year IS NULL OR source_year BETWEEN 1949 AND 3000),
+  issue_label TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  issuer TEXT NOT NULL DEFAULT '',
+  document_number TEXT NOT NULL DEFAULT '',
+  published_at TEXT,
+  effective_at TEXT,
+  repealed_at TEXT,
+  content_text TEXT NOT NULL DEFAULT '',
+  checksum TEXT NOT NULL DEFAULT '',
+  stage TEXT NOT NULL DEFAULT 'discovered' CHECK (stage IN (
+    'discovered', 'indexed', 'needs_review', 'source_verified',
+    'lifecycle_verified', 'ready', 'published', 'manual_review', 'failed'
+  )),
+  source_status TEXT NOT NULL DEFAULT 'pending' CHECK (source_status IN ('pending', 'verified', 'rejected')),
+  metadata_status TEXT NOT NULL DEFAULT 'pending' CHECK (metadata_status IN ('pending', 'verified', 'rejected')),
+  lifecycle_status TEXT NOT NULL DEFAULT 'pending' CHECK (lifecycle_status IN ('pending', 'verified', 'not_applicable', 'rejected')),
+  implementation_status TEXT NOT NULL DEFAULT 'pending' CHECK (implementation_status IN ('pending', 'verified', 'not_found', 'not_applicable', 'rejected')),
+  outcome_status TEXT NOT NULL DEFAULT 'pending' CHECK (outcome_status IN ('pending', 'verified', 'not_found', 'not_applicable', 'rejected')),
+  analysis_status TEXT NOT NULL DEFAULT 'pending' CHECK (analysis_status IN ('pending', 'verified', 'rejected')),
+  evidence_urls_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(evidence_urls_json)),
+  policy_cycle_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(policy_cycle_json)),
+  implementation_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(implementation_json)),
+  outcome_json TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(outcome_json)),
+  analysis_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(analysis_json)),
+  review_notes TEXT NOT NULL DEFAULT '',
+  reviewed_by TEXT NOT NULL DEFAULT '',
+  reviewed_at TEXT,
+  document_id INTEGER UNIQUE REFERENCES documents(id),
+  attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+  last_error TEXT NOT NULL DEFAULT '',
+  next_attempt_at TEXT,
+  fetched_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_backfill_queue
+ON historical_backfill_items(stage, next_attempt_at, source_year, id);
+
+CREATE INDEX IF NOT EXISTS idx_historical_backfill_parent
+ON historical_backfill_items(parent_id, item_kind, id);
+
+CREATE TRIGGER IF NOT EXISTS historical_backfill_ready_insert_guard
+BEFORE INSERT ON historical_backfill_items
+WHEN NEW.stage IN ('ready', 'published')
+BEGIN
+  SELECT CASE WHEN
+    NEW.item_kind <> 'document' OR
+    NEW.source_status <> 'verified' OR
+    NEW.metadata_status <> 'verified' OR
+    NEW.lifecycle_status NOT IN ('verified', 'not_applicable') OR
+    NEW.implementation_status NOT IN ('verified', 'not_found', 'not_applicable') OR
+    NEW.outcome_status NOT IN ('verified', 'not_found', 'not_applicable') OR
+    NEW.analysis_status <> 'verified' OR
+    trim(NEW.title) = '' OR trim(NEW.issuer) = '' OR NEW.published_at IS NULL OR
+    trim(NEW.content_text) = '' OR trim(NEW.checksum) = '' OR
+    json_array_length(NEW.evidence_urls_json) = 0 OR
+    trim(NEW.review_notes) = '' OR trim(NEW.reviewed_by) = '' OR NEW.reviewed_at IS NULL OR
+    (NEW.stage = 'published' AND NEW.document_id IS NULL)
+  THEN RAISE(ABORT, 'historical item is not fully verified for release') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_backfill_ready_update_guard
+BEFORE UPDATE ON historical_backfill_items
+WHEN NEW.stage IN ('ready', 'published')
+BEGIN
+  SELECT CASE WHEN
+    NEW.item_kind <> 'document' OR
+    NEW.source_status <> 'verified' OR
+    NEW.metadata_status <> 'verified' OR
+    NEW.lifecycle_status NOT IN ('verified', 'not_applicable') OR
+    NEW.implementation_status NOT IN ('verified', 'not_found', 'not_applicable') OR
+    NEW.outcome_status NOT IN ('verified', 'not_found', 'not_applicable') OR
+    NEW.analysis_status <> 'verified' OR
+    trim(NEW.title) = '' OR trim(NEW.issuer) = '' OR NEW.published_at IS NULL OR
+    trim(NEW.content_text) = '' OR trim(NEW.checksum) = '' OR
+    json_array_length(NEW.evidence_urls_json) = 0 OR
+    trim(NEW.review_notes) = '' OR trim(NEW.reviewed_by) = '' OR NEW.reviewed_at IS NULL OR
+    (NEW.stage = 'published' AND NEW.document_id IS NULL)
+  THEN RAISE(ABORT, 'historical item is not fully verified for release') END;
+END;
+
 CREATE TABLE IF NOT EXISTS schema_meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '2')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '3')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;
