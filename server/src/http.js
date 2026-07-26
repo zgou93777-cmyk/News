@@ -330,6 +330,18 @@ async function routeApi(req, res, url, context) {
           )
         ) AS assessment_violations,
         count(*) FILTER (
+          WHERE item.stage IN ('ready', 'published') AND item.source_type = 'pdf'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM historical_segmentation_submission_items segment_item
+              JOIN historical_segmentation_submissions segmentation
+                ON segmentation.id = segment_item.submission_id
+              WHERE segment_item.item_id = item.id
+                AND segment_item.content_checksum = item.checksum
+                AND segmentation.item_id = item.parent_id
+            )
+        ) AS segmentation_violations,
+        count(*) FILTER (
           WHERE item.stage IN ('ready', 'published') AND EXISTS (
             SELECT 1
             FROM historical_policy_evidence evidence
@@ -385,6 +397,7 @@ async function routeApi(req, res, url, context) {
           cohortItems: Number(historicalRollout.cohort_items || 0)
         },
         integrityOk: Number(historicalIntegrity.assessment_violations) === 0
+          && Number(historicalIntegrity.segmentation_violations) === 0
           && Number(historicalIntegrity.evidence_source_violations) === 0
           && Number(historicalIntegrity.release_violations) === 0
       },

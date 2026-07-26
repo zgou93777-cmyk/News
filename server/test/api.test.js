@@ -40,7 +40,7 @@ test('health and categories expose database state', async () => {
   assert.equal(healthResponse.headers.get('x-content-type-options'), 'nosniff');
   const health = await healthResponse.json();
   assert.equal(health.status, 'ok');
-  assert.equal(health.schemaVersion, '12');
+  assert.equal(health.schemaVersion, '13');
   assert.equal(health.pushEnabled, true);
   assert.deepEqual(health.historical.byStage, {});
   assert.equal(health.historical.integrityOk, true);

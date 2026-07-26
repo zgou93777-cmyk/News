@@ -14,12 +14,38 @@ node collector/src/cli.js \
 
 The command opens the database read-only and refuses a non-empty output directory.
 It verifies every copied artifact against the stored SHA-256 and byte size. For PDF
-candidates it includes the parent official PDF, only the selected OCR page artifacts,
-the issue text and segmentation artifact, the candidate source text, and a review
+candidates it includes the parent official PDF, selected OCR page artifacts, issue
+text, candidate source text, and a review template. It also exports each completely
+extracted but not yet human-segmented PDF issue with all pages and a `segments.json`
 template. An export is complete only when `manifest.json` exists.
 
 The manifest fixes each queue item ID, source checksum, review file path, and a
 checksum of that snapshot. Export does not change queue stages or public data.
+
+## Segment A Complete PDF Issue
+
+OCR headings are hints only. Fill the issue's `segments.json` with page ranges and
+a corrected transcription copied and checked against the official PDF. Shared
+boundary pages are allowed; ranges that overlap by more than that are rejected.
+First validate without writing:
+
+```bash
+node collector/src/cli.js --historical-pdf-segment 2 \
+  --segments-file /secure/review-bundles/cohort-1/issues/2/segments.json \
+  --dry-run
+```
+
+Apply the exact checksum-bound submission after review:
+
+```bash
+node collector/src/cli.js --historical-pdf-segment 2 \
+  --segments-file /secure/review-bundles/cohort-1/issues/2/segments.json
+```
+
+The source PDF and complete extraction must still match the exported SHA-256 and
+byte sizes. Applying creates only private `manual_review` candidate rows and an
+immutable segmentation submission. A corrected later submission creates distinct
+candidates and quarantines the earlier ones without deleting their audit history.
 
 ## Review And Apply
 
@@ -46,4 +72,6 @@ node collector/src/cli.js --historical-review 123 \
 Applying stores the complete normalized review, source checksum, reviewer identity,
 review time, and linked assessment in `historical_review_submissions`. The submission
 is immutable. Ready, cohort, and public release guards reject a missing or mismatched
-submission.
+review submission. Schema 13 also rejects every PDF candidate whose current content
+checksum is not linked to an immutable human segmentation submission for its parent
+issue.

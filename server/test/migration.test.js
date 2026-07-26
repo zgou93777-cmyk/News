@@ -28,6 +28,14 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         DROP TRIGGER IF EXISTS historical_review_submissions_insert_guard;
         DROP TRIGGER IF EXISTS historical_review_submissions_immutable_update;
         DROP TRIGGER IF EXISTS historical_review_submissions_immutable_delete;
+        DROP TRIGGER IF EXISTS historical_segmentation_submissions_insert_guard;
+        DROP TRIGGER IF EXISTS historical_segmentation_submissions_immutable_update;
+        DROP TRIGGER IF EXISTS historical_segmentation_submissions_immutable_delete;
+        DROP TRIGGER IF EXISTS historical_segmentation_submission_items_insert_guard;
+        DROP TRIGGER IF EXISTS historical_segmentation_submission_items_immutable_update;
+        DROP TRIGGER IF EXISTS historical_segmentation_submission_items_immutable_delete;
+        DROP TRIGGER IF EXISTS historical_segmentation_artifacts_immutable_update;
+        DROP TRIGGER IF EXISTS historical_segmentation_artifacts_immutable_delete;
         DROP TRIGGER IF EXISTS historical_release_control_delete_guard;
         DROP TRIGGER IF EXISTS historical_release_control_update_guard;
         DROP TRIGGER IF EXISTS historical_release_cohorts_delete_guard;
@@ -40,6 +48,8 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         DROP TABLE historical_release_cohort_items;
         DROP TABLE historical_release_cohorts;
         DROP TABLE historical_review_submissions;
+        DROP TABLE historical_segmentation_submission_items;
+        DROP TABLE historical_segmentation_submissions;
         DROP TABLE historical_analysis_versions;
         DROP TABLE historical_evidence_searches;
         DROP TABLE historical_policy_evidence;
@@ -66,7 +76,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
 
     const upgraded = openDatabase(filename);
     try {
-      assert.equal(getSchemaVersion(upgraded), '12');
+      assert.equal(getSchemaVersion(upgraded), '13');
       const retry = upgraded.prepare(`
         SELECT next_attempt_at,
           next_attempt_at > '2026-07-26T10:00:00.000Z' AS remains_deferred
@@ -80,6 +90,8 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
       `).all().map((row) => row.name));
       for (const name of [
         'historical_artifacts',
+        'historical_segmentation_submissions',
+        'historical_segmentation_submission_items',
         'historical_verification_evidence',
         'historical_policy_evidence',
         'historical_analysis_versions',

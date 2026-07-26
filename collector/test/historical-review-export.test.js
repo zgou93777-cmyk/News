@@ -64,6 +64,21 @@ test('review export copies only checksum-verified evidence needed by selected pa
     addArtifact(db, cacheDir, parentId, 'ocr_page', path.join('pages', 'page-0004.txt'), Buffer.from('page four'), 4, 4);
     addArtifact(db, cacheDir, parentId, 'ocr_text', path.join('text', 'issue.txt'), Buffer.from('full issue'));
 
+    const unsegmentedId = Number(db.prepare(`
+      INSERT INTO historical_backfill_items (
+        source_url, source_name, source_type, item_kind, source_year, title, stage
+      ) VALUES ('https://www.gov.cn/gongbao/shuju/1955/unsegmented.pdf', 'Official Gazette',
+        'pdf', 'issue', 1955, '1955 complete issue', 'manual_review')
+    `).run().lastInsertRowid);
+    addArtifact(db, cacheDir, unsegmentedId, 'source_pdf',
+      path.join('pdf', 'unsegmented.pdf'), Buffer.from('%PDF-unsegmented'));
+    addArtifact(db, cacheDir, unsegmentedId, 'ocr_page',
+      path.join('pages', 'unsegmented-page-0001.txt'), Buffer.from('complete page one'), 1, 1);
+    addArtifact(db, cacheDir, unsegmentedId, 'ocr_page',
+      path.join('pages', 'unsegmented-page-0002.txt'), Buffer.from('complete page two'), 2, 2);
+    addArtifact(db, cacheDir, unsegmentedId, 'ocr_text',
+      path.join('text', 'unsegmented.txt'), Buffer.from('complete extracted issue text'), 1, 2);
+
     const before = db.prepare('SELECT count(*) AS count FROM historical_backfill_items').get().count;
     const result = runHistoricalReviewExport(db, {
       historicalReviewExport: outputDir,
@@ -71,11 +86,15 @@ test('review export copies only checksum-verified evidence needed by selected pa
       maxItems: 10
     });
     assert.equal(result.itemCount, 1);
+    assert.equal(result.segmentationIssueCount, 1);
     assert.match(result.manifestChecksum, /^[a-f0-9]{64}$/);
     assert.equal(db.prepare('SELECT count(*) AS count FROM historical_backfill_items').get().count, before);
 
     const manifest = JSON.parse(fs.readFileSync(path.join(outputDir, 'manifest.json'), 'utf8'));
     assert.equal(manifest.entries[0].id, candidateId);
+    assert.equal(manifest.version, 2);
+    assert.equal(manifest.segmentationIssueCount, 1);
+    assert.equal(manifest.segmentationIssues[0].id, unsegmentedId);
     assert.deepEqual(manifest.entries[0].pageRange, { start: 2, end: 3 });
     const review = JSON.parse(fs.readFileSync(path.join(outputDir, 'items', String(candidateId), 'review.json'), 'utf8'));
     assert.equal(review._reviewContext.queueItemId, candidateId);
@@ -92,6 +111,17 @@ test('review export copies only checksum-verified evidence needed by selected pa
       fs.readFileSync(path.join(outputDir, review._reviewContext.sourceTextFile), 'utf8'),
       content
     );
+    const segments = JSON.parse(fs.readFileSync(
+      path.join(outputDir, 'issues', String(unsegmentedId), 'segments.json'),
+      'utf8'
+    ));
+    assert.equal(segments._reviewContext.issueId, unsegmentedId);
+    assert.equal(segments._reviewContext.pageCount, 2);
+    assert.match(segments.sourcePdfChecksum, /^[a-f0-9]{64}$/);
+    assert.match(segments.extractionChecksum, /^[a-f0-9]{64}$/);
+    assert.deepEqual(segments.segments[0], {
+      title: '', pageStart: 1, pageEnd: 2, contentText: ''
+    });
     assert.throws(
       () => runHistoricalReviewExport(db, { historicalReviewExport: outputDir, cacheDir, maxItems: 10 }),
       /must be empty/

@@ -320,6 +320,7 @@ test('historical audit exposes recoverable work, blocked stages and integrity ri
       missingSourceYear: 0,
       documentsMissingMetadata: 1,
       releaseGuardViolations: 0,
+      pdfSegmentationViolations: 0,
       documentLinkViolations: 0,
       orphanedParents: 0,
       staleReadyAssessments: 0,

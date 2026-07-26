@@ -101,6 +101,74 @@ function reviewCandidates(db, maximum) {
   `).all(maximum);
 }
 
+function segmentationIssueCandidates(db, maximum) {
+  return db.prepare(`
+    SELECT item.*
+    FROM historical_backfill_items item
+    WHERE item.item_kind = 'issue' AND item.source_type = 'pdf'
+      AND item.stage IN ('manual_review', 'indexed')
+      AND item.document_id IS NULL
+      AND EXISTS (
+        SELECT 1 FROM historical_artifacts artifact
+        WHERE artifact.item_id = item.id AND artifact.artifact_type = 'source_pdf'
+      )
+      AND EXISTS (
+        SELECT 1 FROM historical_artifacts artifact
+        WHERE artifact.item_id = item.id
+          AND artifact.artifact_type IN ('ocr_text', 'embedded_text')
+          AND artifact.page_start = 1 AND artifact.page_end >= 1
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM historical_segmentation_submissions submission
+        WHERE submission.item_id = item.id
+      )
+    ORDER BY coalesce(item.source_year, 9999), item.id
+    LIMIT ?
+  `).all(maximum);
+}
+
+function completeIssueArtifacts(db, issueId) {
+  const sourcePdf = db.prepare(`
+    SELECT * FROM historical_artifacts
+    WHERE item_id = ? AND artifact_type = 'source_pdf'
+    ORDER BY id DESC LIMIT 1
+  `).get(issueId);
+  const extraction = db.prepare(`
+    SELECT * FROM historical_artifacts
+    WHERE item_id = ? AND artifact_type IN ('ocr_text', 'embedded_text')
+      AND page_start = 1 AND page_end >= 1
+    ORDER BY id DESC LIMIT 1
+  `).get(issueId);
+  if (!sourcePdf || !extraction) {
+    throw new Error(`PDF review issue ${issueId} has no complete source and extraction artifacts`);
+  }
+  return { sourcePdf, extraction, pageCount: Number(extraction.page_end) };
+}
+
+function segmentationTemplate(issue, artifacts, copiedArtifacts) {
+  return {
+    _reviewContext: {
+      issueId: Number(issue.id),
+      title: issue.title || issue.issue_label || '',
+      sourceUrl: officialSourceUrl(issue.source_url),
+      sourceYear: issue.source_year === null ? null : Number(issue.source_year),
+      pageCount: artifacts.pageCount,
+      artifacts: copiedArtifacts
+    },
+    sourcePdfChecksum: artifacts.sourcePdf.checksum,
+    extractionChecksum: artifacts.extraction.checksum,
+    reviewedBy: '',
+    reviewedAt: '',
+    reviewNotes: '',
+    segments: [{
+      title: '',
+      pageStart: 1,
+      pageEnd: artifacts.pageCount,
+      contentText: ''
+    }]
+  };
+}
+
 function artifactFilename(cacheDir, storagePath) {
   const root = path.resolve(cacheDir);
   const filename = path.resolve(root, String(storagePath || ''));
@@ -177,8 +245,10 @@ function runHistoricalReviewExport(db, options = {}) {
   }
   ensureOutputDirectory(outputDir);
   const items = reviewCandidates(db, maximum);
+  const issues = segmentationIssueCandidates(db, maximum);
   const artifactBundles = new Map();
   const rangesByOwner = new Map();
+  const issueArtifacts = new Map();
   for (const item of items) {
     if (item.source_type !== 'pdf') continue;
     if (!item.parent_id) throw new Error(`PDF review item ${item.id} has no parent issue`);
@@ -187,6 +257,11 @@ function runHistoricalReviewExport(db, options = {}) {
     const ranges = rangesByOwner.get(Number(item.parent_id)) || [];
     ranges.push(range);
     rangesByOwner.set(Number(item.parent_id), ranges);
+  }
+  for (const issue of issues) {
+    const artifacts = completeIssueArtifacts(db, issue.id);
+    issueArtifacts.set(Number(issue.id), artifacts);
+    rangesByOwner.set(Number(issue.id), [{ start: 1, end: artifacts.pageCount }]);
   }
   for (const [ownerId, ranges] of rangesByOwner) {
     const artifacts = selectedArtifacts(db, ownerId, ranges);
@@ -244,17 +319,48 @@ function runHistoricalReviewExport(db, options = {}) {
       parentIssueId: ownerId
     };
   });
-  const snapshot = entries.map((entry) => ({
-    id: entry.id,
-    sourceChecksum: entry.sourceChecksum,
-    reviewFile: entry.reviewFile
-  }));
+  const segmentationIssues = issues.map((issue) => {
+    const artifacts = issueArtifacts.get(Number(issue.id));
+    const templateFilename = path.join(outputDir, 'issues', String(issue.id), 'segments.json');
+    writeAtomic(templateFilename, `${JSON.stringify(segmentationTemplate(
+      issue,
+      artifacts,
+      artifactBundles.get(Number(issue.id)) || []
+    ), null, 2)}\n`);
+    return {
+      id: Number(issue.id),
+      title: issue.title || issue.issue_label || '',
+      sourceYear: issue.source_year === null ? null : Number(issue.source_year),
+      stage: issue.stage,
+      sourceUrl: officialSourceUrl(issue.source_url),
+      pageCount: artifacts.pageCount,
+      sourcePdfChecksum: artifacts.sourcePdf.checksum,
+      extractionChecksum: artifacts.extraction.checksum,
+      segmentsFile: relativeBundlePath(outputDir, templateFilename),
+      artifacts: artifactBundles.get(Number(issue.id)) || []
+    };
+  });
+  const snapshot = {
+    items: entries.map((entry) => ({
+      id: entry.id,
+      sourceChecksum: entry.sourceChecksum,
+      reviewFile: entry.reviewFile
+    })),
+    segmentationIssues: segmentationIssues.map((issue) => ({
+      id: issue.id,
+      sourcePdfChecksum: issue.sourcePdfChecksum,
+      extractionChecksum: issue.extractionChecksum,
+      segmentsFile: issue.segmentsFile
+    }))
+  };
   const manifest = {
-    version: 1,
+    version: 2,
     generatedAt: new Date().toISOString(),
     itemCount: entries.length,
+    segmentationIssueCount: segmentationIssues.length,
     manifestChecksum: sha256(JSON.stringify(snapshot)),
-    entries
+    entries,
+    segmentationIssues
   };
   const manifestFilename = path.join(outputDir, 'manifest.json');
   writeAtomic(manifestFilename, `${JSON.stringify(manifest, null, 2)}\n`);
@@ -262,6 +368,7 @@ function runHistoricalReviewExport(db, options = {}) {
     status: 'succeeded',
     outputDir,
     itemCount: entries.length,
+    segmentationIssueCount: segmentationIssues.length,
     manifestChecksum: manifest.manifestChecksum,
     manifestFile: manifestFilename
   };
@@ -272,6 +379,8 @@ module.exports = {
   pageRange,
   reviewCandidates,
   reviewTemplate,
+  segmentationIssueCandidates,
+  segmentationTemplate,
   runHistoricalReviewExport,
   verifiedSourceText
 };

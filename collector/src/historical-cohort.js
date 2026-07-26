@@ -63,6 +63,14 @@ function regressionEntry(db, item, ordinal) {
     item.reviewed_by,
     item.reviewed_at
   ));
+  const segmentationPass = item.source_type !== 'pdf' || Boolean(db.prepare(`
+    SELECT 1
+    FROM historical_segmentation_submission_items segment_item
+    JOIN historical_segmentation_submissions segmentation
+      ON segmentation.id = segment_item.submission_id
+    WHERE segment_item.item_id = ? AND segment_item.content_checksum = ?
+      AND segmentation.item_id = ?
+  `).get(item.id, item.checksum, item.parent_id));
   const checks = {
     reviewStatus: REVIEW_STATUSES.has(assessment.review_status),
     confidence: Number(assessment.confidence) >= MINIMUM_CONFIDENCE,
@@ -71,6 +79,7 @@ function regressionEntry(db, item, ordinal) {
     evidenceQuotes: Array.isArray(analysis.evidenceQuotes) && analysis.evidenceQuotes.length > 0,
     searchScopes: automaticScopesPass,
     reviewSubmission: humanReviewPass,
+    segmentationSubmission: segmentationPass,
     privateDocument: item.document_id === null && item.stage === 'ready'
   };
   return {

@@ -16,6 +16,7 @@ const {
 } = require('./historical-backfill');
 const { runHistoricalReview } = require('./historical-review');
 const { runHistoricalReviewExport } = require('./historical-review-export');
+const { runHistoricalSegmentationReview } = require('./historical-segmentation-review');
 const { runHistoricalPdfQueue } = require('./historical-pdf');
 const { runHistoricalVerificationQueue } = require('./historical-verification');
 const { runHistoricalEvidenceQueue } = require('./historical-evidence');
@@ -38,6 +39,7 @@ const VALUE_OPTIONS = new Map([
   ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'], ['--min-items', 'minItems'],
   ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile'],
   ['--historical-review-export', 'historicalReviewExport'],
+  ['--historical-pdf-segment', 'historicalPdfSegment'], ['--segments-file', 'segmentsFile'],
   ['--historical-cache-dir', 'cacheDir'], ['--ocr-page-budget', 'ocrPageBudget'],
   ['--ocr-languages', 'ocrLanguages'], ['--ocr-dpi', 'ocrDpi'],
   ['--ocr-psm', 'ocrPsm'], ['--ocr-oem', 'ocrOem'], ['--ocr-page-concurrency', 'ocrPageConcurrency'],
@@ -68,6 +70,7 @@ const HELP = `Usage:
   node src/cli.js --historical-status
   node src/cli.js --historical-audit
   node src/cli.js --historical-review-export <output-dir> [--max-items 100]
+  node src/cli.js --historical-pdf-segment <issue-id> --segments-file <segments.json> [--dry-run]
   node src/cli.js --historical-review <queue-id> --review-file <review.json> [--dry-run]
 
 Options:
@@ -94,6 +97,8 @@ Options:
   --historical-status      Show private queue counts by stage
   --historical-audit       Audit recovery boundaries, integrity and current capacity
   --historical-review-export DIR  Export checksum-verified review bundles without database writes
+  --historical-pdf-segment ID  Store a checksum-bound human segmentation of one private PDF issue
+  --segments-file PATH     Corrected policy page ranges and transcriptions for a PDF issue
   --historical-review ID   Validate a structured human review; moves only to private ready state
   --review-file PATH       Review evidence, policy cycle, implementation, outcome and analysis JSON
   --approved-by ID         Responsible reviewer for cohort approval
@@ -229,6 +234,7 @@ function parseArguments(argv) {
     Boolean(options.historicalRelease), Boolean(options.historicalStatus),
     Boolean(options.historicalAudit),
     Boolean(options.historicalReviewExport),
+    Boolean(options.historicalPdfSegment),
     Boolean(options.historicalReview)
   ].filter(Boolean).length;
   if (modes > 1) {
@@ -240,6 +246,12 @@ function parseArguments(argv) {
   if (options.apply && options.dryRun) throw new Error('--apply and --dry-run cannot be used together');
   if (options.historicalReviewExport && options.dryRun) {
     throw new Error('--dry-run is not valid with --historical-review-export');
+  }
+  if (options.historicalPdfSegment && !options.segmentsFile) {
+    throw new Error('--historical-pdf-segment requires --segments-file');
+  }
+  if (options.segmentsFile && !options.historicalPdfSegment) {
+    throw new Error('--segments-file is only valid with --historical-pdf-segment');
   }
   if (options.reconcileRelevance && !options.apply) options.dryRun = true;
   if (options.reconcileLineage && !options.apply) options.dryRun = true;
@@ -319,6 +331,8 @@ async function main() {
         ? historicalQueueAudit(db)
       : options.historicalReviewExport
         ? runHistoricalReviewExport(db, options)
+      : options.historicalPdfSegment
+        ? runHistoricalSegmentationReview(db, options)
       : options.historicalReview
         ? runHistoricalReview(db, options)
       : options.reconcileRelevance

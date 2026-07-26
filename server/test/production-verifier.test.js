@@ -101,6 +101,34 @@ test('production verifier rejects a human assessment without its immutable submi
   }
 });
 
+test('production verifier rejects a ready PDF without human segmentation provenance', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const parentId = Number(db.prepare(`
+      INSERT INTO historical_backfill_items (
+        source_url, source_name, source_type, item_kind, source_year, title, stage
+      ) VALUES ('https://www.gov.cn/gongbao/legacy.pdf', 'Official Gazette',
+        'pdf', 'issue', 1954, 'Legacy issue', 'indexed')
+    `).run().lastInsertRowid);
+    db.exec('DROP TRIGGER historical_backfill_ready_insert_guard');
+    db.prepare(`
+      INSERT INTO historical_backfill_items (
+        parent_id, source_url, source_name, source_type, item_kind, source_year,
+        title, checksum, stage
+      ) VALUES (?, 'https://www.gov.cn/gongbao/legacy.pdf#pages=1-2', 'Official Gazette',
+        'pdf', 'document', 1954, 'Legacy PDF policy', ?, 'ready')
+    `).run(parentId, '0'.repeat(64));
+
+    const report = verifyDatabase(db);
+    assert.equal(report.ok, false);
+    const check = report.checks.find((entry) => entry.name === 'historical_pdf_segmentations');
+    assert.equal(check.ok, false);
+    assert.match(check.details, /1 violation/);
+  } finally {
+    db.close();
+  }
+});
+
 test('OCR language parser requires exact language identifiers', () => {
   const languages = tesseractLanguages('List of available languages (3):\nchi_sim\nchi_tra\neng\n');
   assert.equal(languages.has('chi_sim'), true);

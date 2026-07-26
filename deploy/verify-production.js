@@ -6,10 +6,12 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const EXPECTED_SCHEMA = '12';
+const EXPECTED_SCHEMA = '13';
 const REQUIRED_TABLES = [
   'historical_backfill_items',
   'historical_artifacts',
+  'historical_segmentation_submissions',
+  'historical_segmentation_submission_items',
   'historical_verification_evidence',
   'historical_policy_evidence',
   'historical_evidence_searches',
@@ -116,6 +118,18 @@ function verifyDatabase(db) {
           )
         ) AS assessment_violations,
         count(*) FILTER (
+          WHERE item.stage IN ('ready', 'published') AND item.source_type = 'pdf'
+            AND NOT EXISTS (
+              SELECT 1
+              FROM historical_segmentation_submission_items segment_item
+              JOIN historical_segmentation_submissions segmentation
+                ON segmentation.id = segment_item.submission_id
+              WHERE segment_item.item_id = item.id
+                AND segment_item.content_checksum = item.checksum
+                AND segmentation.item_id = item.parent_id
+            )
+        ) AS segmentation_violations,
+        count(*) FILTER (
           WHERE item.stage = 'published' AND NOT EXISTS (
             SELECT 1 FROM historical_public_releases release
             WHERE release.item_id = item.id AND release.document_id = item.document_id
@@ -125,6 +139,8 @@ function verifyDatabase(db) {
     `).get();
     add('historical_assessments', Number(integrity.assessment_violations) === 0,
       `${integrity.assessment_violations} violation(s)`);
+    add('historical_pdf_segmentations', Number(integrity.segmentation_violations) === 0,
+      `${integrity.segmentation_violations} violation(s)`);
     add('historical_releases', Number(integrity.release_violations) === 0,
       `${integrity.release_violations} violation(s)`);
   }

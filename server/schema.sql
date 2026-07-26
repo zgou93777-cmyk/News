@@ -291,6 +291,133 @@ CREATE TABLE IF NOT EXISTS historical_artifacts (
 CREATE INDEX IF NOT EXISTS idx_historical_artifacts_item
 ON historical_artifacts(item_id, artifact_type, page_start);
 
+CREATE TABLE IF NOT EXISTS historical_segmentation_submissions (
+  id INTEGER PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE RESTRICT,
+  source_pdf_checksum TEXT NOT NULL CHECK (length(source_pdf_checksum) = 64),
+  extraction_checksum TEXT NOT NULL CHECK (length(extraction_checksum) = 64),
+  submission_checksum TEXT NOT NULL CHECK (length(submission_checksum) = 64),
+  segments_json TEXT NOT NULL CHECK (
+    json_valid(segments_json) AND json_type(segments_json) = 'object'
+    AND json_array_length(segments_json, '$.segments') > 0
+  ),
+  reviewed_by TEXT NOT NULL CHECK (trim(reviewed_by) <> ''),
+  reviewed_at TEXT NOT NULL CHECK (trim(reviewed_at) <> ''),
+  review_notes TEXT NOT NULL CHECK (trim(review_notes) <> ''),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE(item_id, submission_checksum)
+) STRICT;
+
+CREATE TABLE IF NOT EXISTS historical_segmentation_submission_items (
+  submission_id INTEGER NOT NULL REFERENCES historical_segmentation_submissions(id) ON DELETE RESTRICT,
+  ordinal INTEGER NOT NULL CHECK (ordinal > 0),
+  item_id INTEGER NOT NULL UNIQUE REFERENCES historical_backfill_items(id) ON DELETE RESTRICT,
+  page_start INTEGER NOT NULL CHECK (page_start > 0),
+  page_end INTEGER NOT NULL CHECK (page_end >= page_start),
+  content_checksum TEXT NOT NULL CHECK (length(content_checksum) = 64),
+  PRIMARY KEY(submission_id, ordinal)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_segmentation_submission_items_parent
+ON historical_segmentation_submission_items(submission_id, item_id);
+
+CREATE TRIGGER IF NOT EXISTS historical_segmentation_submissions_insert_guard
+BEFORE INSERT ON historical_segmentation_submissions
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM historical_backfill_items item
+    JOIN historical_artifacts artifact ON artifact.item_id = item.id
+      AND artifact.artifact_type = 'source_pdf'
+      AND artifact.checksum = NEW.source_pdf_checksum
+    WHERE item.id = NEW.item_id AND item.item_kind = 'issue' AND item.source_type = 'pdf'
+  ) OR NOT EXISTS (
+    SELECT 1 FROM historical_artifacts artifact
+    WHERE artifact.item_id = NEW.item_id
+      AND artifact.artifact_type IN ('ocr_text', 'embedded_text')
+      AND artifact.checksum = NEW.extraction_checksum
+      AND artifact.page_start = 1 AND artifact.page_end >= 1
+      AND artifact.page_end = CAST(json_extract(NEW.segments_json, '$.pageCount') AS INTEGER)
+  ) OR coalesce(CAST(json_extract(NEW.segments_json, '$.issueId') AS INTEGER), 0) <> NEW.item_id
+    OR coalesce(json_extract(NEW.segments_json, '$.sourcePdfChecksum'), '') <> NEW.source_pdf_checksum
+    OR coalesce(json_extract(NEW.segments_json, '$.extractionChecksum'), '') <> NEW.extraction_checksum
+    OR coalesce(json_extract(NEW.segments_json, '$.reviewedBy'), '') <> NEW.reviewed_by
+    OR coalesce(json_extract(NEW.segments_json, '$.reviewedAt'), '') <> NEW.reviewed_at
+    OR coalesce(json_extract(NEW.segments_json, '$.reviewNotes'), '') <> NEW.review_notes
+  THEN RAISE(ABORT, 'historical segmentation submission does not match its source issue') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_segmentation_submissions_immutable_update
+BEFORE UPDATE ON historical_segmentation_submissions
+BEGIN
+  SELECT RAISE(ABORT, 'historical segmentation submissions are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_segmentation_submissions_immutable_delete
+BEFORE DELETE ON historical_segmentation_submissions
+BEGIN
+  SELECT RAISE(ABORT, 'historical segmentation submissions are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_segmentation_submission_items_insert_guard
+BEFORE INSERT ON historical_segmentation_submission_items
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1
+    FROM historical_segmentation_submissions submission
+    JOIN historical_backfill_items child ON child.id = NEW.item_id
+    WHERE submission.id = NEW.submission_id
+      AND child.parent_id = submission.item_id
+      AND child.item_kind = 'document' AND child.source_type = 'pdf'
+      AND child.checksum = NEW.content_checksum
+      AND child.title = json_extract(
+        submission.segments_json, '$.segments[' || (NEW.ordinal - 1) || '].title'
+      )
+      AND CAST(json_extract(
+        submission.segments_json, '$.segments[' || (NEW.ordinal - 1) || '].pageStart'
+      ) AS INTEGER) = NEW.page_start
+      AND CAST(json_extract(
+        submission.segments_json, '$.segments[' || (NEW.ordinal - 1) || '].pageEnd'
+      ) AS INTEGER) = NEW.page_end
+      AND json_extract(
+        submission.segments_json, '$.segments[' || (NEW.ordinal - 1) || '].contentChecksum'
+      ) = NEW.content_checksum
+  ) THEN RAISE(ABORT, 'historical segmentation item does not match its submission') END;
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_segmentation_submission_items_immutable_update
+BEFORE UPDATE ON historical_segmentation_submission_items
+BEGIN
+  SELECT RAISE(ABORT, 'historical segmentation submission items are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_segmentation_submission_items_immutable_delete
+BEFORE DELETE ON historical_segmentation_submission_items
+BEGIN
+  SELECT RAISE(ABORT, 'historical segmentation submission items are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_segmentation_artifacts_immutable_update
+BEFORE UPDATE ON historical_artifacts
+WHEN EXISTS (
+  SELECT 1 FROM historical_segmentation_submissions submission
+  WHERE submission.item_id = OLD.item_id
+    AND OLD.checksum IN (submission.source_pdf_checksum, submission.extraction_checksum)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'artifacts used by historical segmentation submissions are immutable');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_segmentation_artifacts_immutable_delete
+BEFORE DELETE ON historical_artifacts
+WHEN EXISTS (
+  SELECT 1 FROM historical_segmentation_submissions submission
+  WHERE submission.item_id = OLD.item_id
+    AND OLD.checksum IN (submission.source_pdf_checksum, submission.extraction_checksum)
+)
+BEGIN
+  SELECT RAISE(ABORT, 'artifacts used by historical segmentation submissions are immutable');
+END;
+
 CREATE TABLE IF NOT EXISTS historical_verification_evidence (
   id INTEGER PRIMARY KEY,
   item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
@@ -603,6 +730,18 @@ BEGIN
       AND assessment.release_eligible = 1 AND assessment.confidence >= 0.95
       AND assessment.methodology IN ('historical-evidence-gates-v2', 'human-review-v1')
       AND (
+        item.source_type <> 'pdf'
+        OR EXISTS (
+          SELECT 1
+          FROM historical_segmentation_submission_items segment_item
+          JOIN historical_segmentation_submissions segmentation
+            ON segmentation.id = segment_item.submission_id
+          WHERE segment_item.item_id = item.id
+            AND segment_item.content_checksum = item.checksum
+            AND segmentation.item_id = item.parent_id
+        )
+      )
+      AND (
         assessment.methodology <> 'human-review-v1'
         OR EXISTS (
           SELECT 1 FROM historical_review_submissions submission
@@ -742,6 +881,14 @@ BEGIN
     trim(NEW.content_text) = '' OR trim(NEW.checksum) = '' OR
     json_array_length(NEW.evidence_urls_json) = 0 OR
     trim(NEW.review_notes) = '' OR trim(NEW.reviewed_by) = '' OR NEW.reviewed_at IS NULL OR
+    (NEW.source_type = 'pdf' AND NOT EXISTS (
+      SELECT 1
+      FROM historical_segmentation_submission_items segment_item
+      JOIN historical_segmentation_submissions segmentation ON segmentation.id = segment_item.submission_id
+      WHERE segment_item.item_id = NEW.id
+        AND segment_item.content_checksum = NEW.checksum
+        AND segmentation.item_id = NEW.parent_id
+    )) OR
     NOT EXISTS (
       SELECT 1 FROM historical_analysis_versions assessment
       WHERE assessment.id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
@@ -809,6 +956,14 @@ BEGIN
     trim(NEW.content_text) = '' OR trim(NEW.checksum) = '' OR
     json_array_length(NEW.evidence_urls_json) = 0 OR
     trim(NEW.review_notes) = '' OR trim(NEW.reviewed_by) = '' OR NEW.reviewed_at IS NULL OR
+    (NEW.source_type = 'pdf' AND NOT EXISTS (
+      SELECT 1
+      FROM historical_segmentation_submission_items segment_item
+      JOIN historical_segmentation_submissions segmentation ON segmentation.id = segment_item.submission_id
+      WHERE segment_item.item_id = NEW.id
+        AND segment_item.content_checksum = NEW.checksum
+        AND segmentation.item_id = NEW.parent_id
+    )) OR
     NOT EXISTS (
       SELECT 1 FROM historical_analysis_versions assessment
       WHERE assessment.id = CAST(json_extract(NEW.analysis_json, '$.assessmentVersionId') AS INTEGER)
@@ -871,5 +1026,5 @@ SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at)
 WHERE next_attempt_at GLOB '????-??-?? ??:??:??*'
   AND strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at) IS NOT NULL;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '12')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '13')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

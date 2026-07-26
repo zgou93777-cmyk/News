@@ -111,6 +111,20 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
     () => parseArguments(['--historical-review-export', 'review-bundle', '--dry-run']),
     /not valid/
   );
+  const segmentation = parseArguments([
+    '--historical-pdf-segment', '2', '--segments-file', 'segments.json', '--dry-run'
+  ]);
+  assert.equal(segmentation.historicalPdfSegment, '2');
+  assert.equal(segmentation.segmentsFile, 'segments.json');
+  assert.equal(segmentation.dryRun, true);
+  assert.throws(
+    () => parseArguments(['--historical-pdf-segment', '2']),
+    /requires --segments-file/
+  );
+  assert.throws(
+    () => parseArguments(['--segments-file', 'segments.json']),
+    /only valid/
+  );
   assert.throws(
     () => parseArguments(['--historical-audit', '--historical-status']),
     /choose only one/

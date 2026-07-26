@@ -482,9 +482,30 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
           OR trim(content_text) = '' OR trim(checksum) = ''
           OR json_array_length(evidence_urls_json) = 0
           OR trim(review_notes) = '' OR trim(reviewed_by) = '' OR reviewed_at IS NULL
+          OR (source_type = 'pdf' AND NOT EXISTS (
+            SELECT 1
+            FROM historical_segmentation_submission_items segment_item
+            JOIN historical_segmentation_submissions segmentation
+              ON segmentation.id = segment_item.submission_id
+            WHERE segment_item.item_id = historical_backfill_items.id
+              AND segment_item.content_checksum = historical_backfill_items.checksum
+              AND segmentation.item_id = historical_backfill_items.parent_id
+          ))
           OR (stage = 'published' AND document_id IS NULL)
         )
       ) AS release_guard_violations,
+      count(*) FILTER (
+        WHERE stage IN ('ready', 'published') AND source_type = 'pdf'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM historical_segmentation_submission_items segment_item
+            JOIN historical_segmentation_submissions segmentation
+              ON segmentation.id = segment_item.submission_id
+            WHERE segment_item.item_id = historical_backfill_items.id
+              AND segment_item.content_checksum = historical_backfill_items.checksum
+              AND segmentation.item_id = historical_backfill_items.parent_id
+          )
+      ) AS pdf_segmentation_violations,
       count(*) FILTER (
         WHERE (stage = 'published' AND document_id IS NULL)
           OR (stage <> 'published' AND document_id IS NOT NULL)
@@ -652,6 +673,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
       missingSourceYear: Number(integrity.missing_source_year),
       documentsMissingMetadata: Number(integrity.documents_missing_metadata),
       releaseGuardViolations: Number(integrity.release_guard_violations),
+      pdfSegmentationViolations: Number(integrity.pdf_segmentation_violations),
       documentLinkViolations: Number(integrity.document_link_violations),
       orphanedParents: Number(orphanedParents),
       staleReadyAssessments: Number(releaseIntegrity.stale_ready_assessments),

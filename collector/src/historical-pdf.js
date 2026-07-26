@@ -503,7 +503,7 @@ function queueStaleOcrProfiles(db, profileId) {
   `).run(profileId, profileId).changes);
 }
 
-function insertPdfCandidates(db, item, candidates) {
+function insertPdfCandidates(db, item, candidates, options = {}) {
   const insert = db.prepare(`
     INSERT INTO historical_backfill_items (
       parent_id, source_url, source_name, source_type, item_kind,
@@ -532,12 +532,21 @@ function insertPdfCandidates(db, item, candidates) {
     WHERE historical_backfill_items.document_id IS NULL
   `);
   let created = 0;
-  db.exec('BEGIN IMMEDIATE');
+  const insertedItems = [];
+  const manageTransaction = options.manageTransaction !== false;
+  if (manageTransaction) db.exec('BEGIN IMMEDIATE');
   try {
-    const quarantined = quarantinePdfChildren(db, item.id, 'superseded by parent PDF re-segmentation');
+    const quarantined = quarantinePdfChildren(
+      db,
+      item.id,
+      options.quarantineReason || 'superseded by parent PDF re-segmentation'
+    );
     for (const candidate of candidates) {
       const baseUrl = String(item.source_url).split('#')[0];
-      const sourceUrl = `${baseUrl}#candidate=${candidate.checksum.slice(0, 16)}&pages=${candidate.pageStart}-${candidate.pageEnd}`;
+      const candidateTag = options.candidateTag
+        ? `&segmentation=${encodeURIComponent(String(options.candidateTag))}`
+        : '';
+      const sourceUrl = `${baseUrl}#candidate=${candidate.checksum.slice(0, 16)}&pages=${candidate.pageStart}-${candidate.pageEnd}${candidateTag}`;
       const result = insert.run(
         item.id,
         sourceUrl,
@@ -547,9 +556,13 @@ function insertPdfCandidates(db, item, candidates) {
         candidate.title,
         candidate.contentText,
         candidate.checksum,
-        `OCR transcription requires comparison with official PDF pages ${candidate.pageStart}-${candidate.pageEnd}`
+        options.candidateReason
+          || `OCR transcription requires comparison with official PDF pages ${candidate.pageStart}-${candidate.pageEnd}`
       );
       created += result.changes;
+      insertedItems.push(db.prepare(`
+        SELECT * FROM historical_backfill_items WHERE source_url = ?
+      `).get(sourceUrl));
     }
     db.prepare(`
       UPDATE historical_backfill_items SET
@@ -558,10 +571,10 @@ function insertPdfCandidates(db, item, candidates) {
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
     `).run(item.id);
-    db.exec('COMMIT');
-    return { created, quarantined };
+    if (manageTransaction) db.exec('COMMIT');
+    return { created, quarantined, items: insertedItems };
   } catch (error) {
-    db.exec('ROLLBACK');
+    if (manageTransaction) db.exec('ROLLBACK');
     throw error;
   }
 }
@@ -804,6 +817,7 @@ module.exports = {
   queueLegacyPdfSegmentations,
   queueStaleOcrProfiles,
   historicalOcrProfile,
+  insertPdfCandidates,
   runHistoricalPdfQueue,
   segmentPdfIssueText,
   splitPdfIssueText

@@ -19,6 +19,8 @@ const REQUIRED_TABLES = [
   'sync_runs',
   'historical_backfill_items',
   'historical_artifacts',
+  'historical_segmentation_submissions',
+  'historical_segmentation_submission_items',
   'historical_source_scans',
   'historical_verification_evidence',
   'historical_policy_relations',

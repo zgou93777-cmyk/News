@@ -96,7 +96,14 @@ node src/cli.js --historical-review-export /secure/review-bundles/cohort-1 --max
 
 The output directory must be empty. A complete bundle contains `manifest.json`, one
 source transcript and review template per item, and checksum-verified parent PDF,
-OCR page, text, and segmentation artifacts for the selected page ranges.
+OCR page and text artifacts for the selected page ranges. Completely extracted PDF
+issues that still need human article boundaries also include all pages and an
+`issues/<id>/segments.json` template. Validate and apply one with:
+
+```bash
+node src/cli.js --historical-pdf-segment 2 --segments-file /secure/review-bundles/cohort-1/issues/2/segments.json --dry-run
+node src/cli.js --historical-pdf-segment 2 --segments-file /secure/review-bundles/cohort-1/issues/2/segments.json
+```
 
 审校文件必须同时包含：官方 `.gov.cn` 原文及补充证据 URL、标题/机构/发文日期、政策生效与废止周期、实施和结果证据状态、逐字证据摘录、分析摘要、歧义、审校说明和审校人。会议或文件表态不能作为实施证据；“未找到结果证据”必须明确记录为 `not_found`，不能改写成已兑现。数据库触发器会拒绝把字段不完整的条目标记为 `ready` 或 `published`。
 
