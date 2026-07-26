@@ -258,6 +258,18 @@ ON historical_backfill_items(stage, next_attempt_at, source_year, id);
 CREATE INDEX IF NOT EXISTS idx_historical_backfill_parent
 ON historical_backfill_items(parent_id, item_kind, id);
 
+CREATE TABLE IF NOT EXISTS historical_source_scans (
+  id INTEGER PRIMARY KEY,
+  source_id TEXT NOT NULL,
+  from_year INTEGER NOT NULL CHECK (from_year BETWEEN 1949 AND 3000),
+  to_year INTEGER NOT NULL CHECK (to_year BETWEEN from_year AND 3000),
+  available_items INTEGER NOT NULL DEFAULT 0 CHECK (available_items >= 0),
+  remaining_items INTEGER NOT NULL DEFAULT 0 CHECK (remaining_items >= 0),
+  complete INTEGER NOT NULL DEFAULT 0 CHECK (complete IN (0, 1)),
+  scanned_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  UNIQUE(source_id, from_year, to_year)
+) STRICT;
+
 CREATE TABLE IF NOT EXISTS historical_artifacts (
   id INTEGER PRIMARY KEY,
   item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
@@ -278,6 +290,49 @@ CREATE TABLE IF NOT EXISTS historical_artifacts (
 
 CREATE INDEX IF NOT EXISTS idx_historical_artifacts_item
 ON historical_artifacts(item_id, artifact_type, page_start);
+
+CREATE TABLE IF NOT EXISTS historical_verification_evidence (
+  id INTEGER PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
+  source_item_id INTEGER REFERENCES historical_backfill_items(id) ON DELETE SET NULL,
+  claim_type TEXT NOT NULL CHECK (claim_type IN (
+    'source', 'title', 'issuer', 'document_number', 'published_at',
+    'effective_at', 'repealed_at', 'supersedes', 'repeals'
+  )),
+  status TEXT NOT NULL CHECK (status IN ('verified', 'not_found', 'pending', 'rejected')),
+  value_text TEXT NOT NULL DEFAULT '',
+  evidence_quote TEXT NOT NULL DEFAULT '',
+  source_url TEXT NOT NULL DEFAULT '',
+  search_scope TEXT NOT NULL DEFAULT '',
+  extractor TEXT NOT NULL,
+  confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+  observed_at TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  CHECK (
+    (status = 'verified' AND trim(value_text) <> '' AND trim(evidence_quote) <> '' AND trim(source_url) <> '')
+    OR (status = 'not_found' AND trim(search_scope) <> '')
+    OR status IN ('pending', 'rejected')
+  ),
+  UNIQUE(item_id, claim_type, status, value_text, source_url, evidence_quote)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_verification_item
+ON historical_verification_evidence(item_id, claim_type, status);
+
+CREATE TABLE IF NOT EXISTS historical_policy_relations (
+  id INTEGER PRIMARY KEY,
+  predecessor_item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
+  successor_item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
+  relation_type TEXT NOT NULL CHECK (relation_type IN ('repeals', 'supersedes', 'amends')),
+  evidence_id INTEGER NOT NULL REFERENCES historical_verification_evidence(id) ON DELETE RESTRICT,
+  status TEXT NOT NULL DEFAULT 'verified' CHECK (status IN ('candidate', 'verified', 'rejected')),
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  CHECK (predecessor_item_id <> successor_item_id),
+  UNIQUE(predecessor_item_id, successor_item_id, relation_type)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_relations_predecessor
+ON historical_policy_relations(predecessor_item_id, relation_type, status);
 
 CREATE TRIGGER IF NOT EXISTS historical_backfill_ready_insert_guard
 BEFORE INSERT ON historical_backfill_items
@@ -324,5 +379,5 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '4')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '5')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

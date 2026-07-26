@@ -76,6 +76,9 @@ test('historical discovery resumes after URLs already queued', async () => {
       db.prepare('SELECT source_year FROM historical_backfill_items ORDER BY source_year').all().map((row) => row.source_year),
       [1954, 1955]
     );
+    const scan = db.prepare('SELECT * FROM historical_source_scans').get();
+    assert.equal(scan.complete, 1);
+    assert.equal(scan.remaining_items, 0);
   } finally {
     db.close();
   }

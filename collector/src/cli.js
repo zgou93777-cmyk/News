@@ -16,6 +16,7 @@ const {
 } = require('./historical-backfill');
 const { runHistoricalReview } = require('./historical-review');
 const { runHistoricalPdfQueue } = require('./historical-pdf');
+const { runHistoricalVerificationQueue } = require('./historical-verification');
 const { runCollection, runSeedBackfill } = require('./pipeline');
 const { runReconcileLineage } = require('./reconcile-lineage');
 const { runReconcileRelevance } = require('./reconcile');
@@ -46,6 +47,7 @@ const HELP = `Usage:
   node src/cli.js --historical-discover [--from-year 1949] [--to-year YYYY] [--max-items 100]
   node src/cli.js --historical-process [--adaptive-load] [--min-items 5] [--max-items 100]
   node src/cli.js --historical-pdf-process [--adaptive-load] [--max-items 5] [--ocr-page-budget 20]
+  node src/cli.js --historical-verify [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-status
   node src/cli.js --historical-audit
   node src/cli.js --historical-review <queue-id> --review-file <review.json> [--dry-run]
@@ -64,6 +66,7 @@ Options:
   --historical-discover    Discover official archive entries into the private review queue
   --historical-process     Slowly fetch/extract queued entries; never publishes them
   --historical-pdf-process Cache, extract/OCR and segment private PDF issue rows
+  --historical-verify      Verify private source metadata and official lifecycle evidence
   --adaptive-load          Recheck CPU and memory pressure between historical items
   --historical-status      Show private queue counts by stage
   --historical-audit       Audit recovery boundaries, integrity and current capacity
@@ -91,6 +94,7 @@ function parseArguments(argv) {
     else if (argument === '--historical-discover') options.historicalDiscover = true;
     else if (argument === '--historical-process') options.historicalProcess = true;
     else if (argument === '--historical-pdf-process') options.historicalPdfProcess = true;
+    else if (argument === '--historical-verify') options.historicalVerify = true;
     else if (argument === '--historical-status') options.historicalStatus = true;
     else if (argument === '--historical-audit') options.historicalAudit = true;
     else if (argument === '--adaptive-load') options.adaptiveLoad = true;
@@ -148,10 +152,10 @@ function parseArguments(argv) {
       throw new Error('--ocr-page-budget is only valid with --historical-pdf-process');
     }
   }
-  if (options.adaptiveLoad && !options.historicalProcess && !options.historicalPdfProcess) {
+  if (options.adaptiveLoad && !options.historicalProcess && !options.historicalPdfProcess && !options.historicalVerify) {
     throw new Error('--adaptive-load is only valid with a historical processing mode');
   }
-  if (options.minItems !== undefined && !options.historicalProcess && !options.historicalPdfProcess) {
+  if (options.minItems !== undefined && !options.historicalProcess && !options.historicalPdfProcess && !options.historicalVerify) {
     throw new Error('--min-items is only valid with a historical processing mode');
   }
   const modes = [
@@ -159,7 +163,7 @@ function parseArguments(argv) {
     Boolean(options.backfillSeed), Boolean(options.backfillImages),
     Boolean(options.reconcileRelevance), Boolean(options.reconcileLineage),
     Boolean(options.historicalDiscover), Boolean(options.historicalProcess), Boolean(options.historicalPdfProcess),
-    Boolean(options.historicalStatus),
+    Boolean(options.historicalVerify), Boolean(options.historicalStatus),
     Boolean(options.historicalAudit),
     Boolean(options.historicalReview)
   ].filter(Boolean).length;
@@ -220,6 +224,8 @@ async function main() {
         ? await runHistoricalQueue(db, { ...options, notify: false })
       : options.historicalPdfProcess
         ? await runHistoricalPdfQueue(db, { ...options, notify: false })
+      : options.historicalVerify
+        ? await runHistoricalVerificationQueue(db, { ...options, notify: false })
       : options.historicalStatus
         ? { status: 'succeeded', queue: historicalQueueStats(db) }
       : options.historicalAudit

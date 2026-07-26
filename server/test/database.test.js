@@ -18,7 +18,10 @@ const REQUIRED_TABLES = [
   'push_subscriptions',
   'sync_runs',
   'historical_backfill_items',
-  'historical_artifacts'
+  'historical_artifacts',
+  'historical_source_scans',
+  'historical_verification_evidence',
+  'historical_policy_relations'
 ];
 
 test('historical backfill records are private and verification-gated', () => {
@@ -67,6 +70,32 @@ test('historical artifacts preserve checksums and remain private with their queu
       /CHECK constraint failed/
     );
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('verified historical claims require official quotes while not-found claims require a search scope', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const itemId = Number(db.prepare(`
+      INSERT INTO historical_backfill_items (source_url, source_name, source_year, item_kind, stage)
+      VALUES (?, ?, ?, 'document', 'needs_review')
+    `).run('https://www.gov.cn/gongbao/claim.htm', 'Official Gazette', 1980).lastInsertRowid);
+    assert.throws(
+      () => db.prepare(`
+        INSERT INTO historical_verification_evidence (
+          item_id, claim_type, status, value_text, extractor, confidence
+        ) VALUES (?, 'issuer', 'verified', 'State Council', 'test', 1)
+      `).run(itemId),
+      /CHECK constraint failed/
+    );
+    db.prepare(`
+      INSERT INTO historical_verification_evidence (
+        item_id, claim_type, status, search_scope, extractor, confidence
+      ) VALUES (?, 'document_number', 'not_found', 'complete official source text', 'test', 1)
+    `).run(itemId);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM historical_verification_evidence').get().count, 1);
   } finally {
     db.close();
   }

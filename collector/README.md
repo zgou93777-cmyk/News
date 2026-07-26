@@ -58,6 +58,9 @@ node src/cli.js --historical-process --adaptive-load --min-items 5 --max-items 1
 # 处理私有 PDF 队列；优先内嵌文本，必要时每份最多新增 OCR 20 页并保存断点
 node src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --delay-ms 5000
 
+# 核验机关、文号、发布日期、施行日期以及后续官方废止/替代关系
+node src/cli.js --historical-verify --adaptive-load --min-items 5 --max-items 100
+
 # 查看私有队列，不影响首页或公开 API
 node src/cli.js --historical-status
 

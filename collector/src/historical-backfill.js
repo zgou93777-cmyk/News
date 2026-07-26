@@ -202,12 +202,32 @@ async function runHistoricalDiscovery(db, options = {}, dependencies = {}) {
           issueLabel: candidate.itemKind === 'issue' ? candidate.title : ''
         })) result.queued += 1;
       }
+      const remainingAfterBatch = Math.max(0, unseenCandidates.length - candidates.length);
       result.sources.push({
         id: source.id,
         available: allCandidates.length,
         candidates: candidates.length,
-        remainingAfterBatch: Math.max(0, unseenCandidates.length - candidates.length)
+        remainingAfterBatch
       });
+      if (!options.dryRun) {
+        db.prepare(`
+          INSERT INTO historical_source_scans (
+            source_id, from_year, to_year, available_items, remaining_items, complete, scanned_at
+          ) VALUES (?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+          ON CONFLICT(source_id, from_year, to_year) DO UPDATE SET
+            available_items = excluded.available_items,
+            remaining_items = excluded.remaining_items,
+            complete = excluded.complete,
+            scanned_at = excluded.scanned_at
+        `).run(
+          source.id,
+          Math.max(fromYear, source.coverageStartYear),
+          Math.min(toYear, source.coverageEndYear || toYear),
+          allCandidates.length,
+          remainingAfterBatch,
+          remainingAfterBatch === 0 ? 1 : 0
+        );
+      }
       remaining -= candidates.length;
     } catch (error) {
       result.errors.push({ source: source.id, url: source.navigationUrl, message: error.message });
