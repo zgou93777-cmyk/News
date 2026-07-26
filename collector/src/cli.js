@@ -38,7 +38,7 @@ const VALUE_OPTIONS = new Map([
   ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile'],
   ['--historical-cache-dir', 'cacheDir'], ['--ocr-page-budget', 'ocrPageBudget'],
   ['--ocr-languages', 'ocrLanguages'], ['--ocr-dpi', 'ocrDpi'],
-  ['--ocr-psm', 'ocrPsm'], ['--ocr-oem', 'ocrOem'],
+  ['--ocr-psm', 'ocrPsm'], ['--ocr-oem', 'ocrOem'], ['--ocr-page-concurrency', 'ocrPageConcurrency'],
   ['--historical-cohort-approve', 'historicalCohortApprove'],
   ['--approved-by', 'approvedBy'], ['--approval-note', 'approvalNote']
 ]);
@@ -56,6 +56,7 @@ const HELP = `Usage:
   node src/cli.js --historical-process [--adaptive-load] [--min-items 5] [--max-items 100]
   node src/cli.js --historical-pdf-process [--adaptive-load] [--max-items 5] [--ocr-page-budget 20]
     [--ocr-languages chi_sim+chi_tra+eng] [--ocr-dpi 300] [--ocr-psm 3] [--ocr-oem 1]
+    [--ocr-page-concurrency 2]
   node src/cli.js --historical-verify [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-evidence [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-analyze [--adaptive-load] [--max-items 100]
@@ -102,6 +103,7 @@ Options:
   --ocr-dpi N              Scan rendering resolution from 150 to 600; default 300
   --ocr-psm N              Tesseract page segmentation mode from 0 to 13; default 3
   --ocr-oem N              Tesseract engine mode from 0 to 3; default 1
+  --ocr-page-concurrency N Concurrent OCR pages from 1 to 2; default 1
 `;
 
 function parseArguments(argv) {
@@ -184,7 +186,8 @@ function parseArguments(argv) {
   const ocrIntegers = [
     ['ocrDpi', '--ocr-dpi', 150, 600],
     ['ocrPsm', '--ocr-psm', 0, 13],
-    ['ocrOem', '--ocr-oem', 0, 3]
+    ['ocrOem', '--ocr-oem', 0, 3],
+    ['ocrPageConcurrency', '--ocr-page-concurrency', 1, 2]
   ];
   for (const [key, flag, minimum, maximum] of ocrIntegers) {
     if (options[key] === undefined) continue;

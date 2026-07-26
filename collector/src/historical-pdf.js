@@ -275,30 +275,45 @@ async function ocrPdfPages(pdfFilename, sourceChecksum, options = {}) {
   await fs.promises.mkdir(temporaryDir, { recursive: true });
   const pageCount = await (options.pageCount || pdfPageCount)(pdfFilename, options);
   const pageBudget = Math.max(1, options.pageBudget || 20);
+  const pageConcurrency = Number(options.pageConcurrency ?? options.ocrPageConcurrency ?? 1);
+  if (!Number.isSafeInteger(pageConcurrency) || pageConcurrency < 1 || pageConcurrency > 2) {
+    throw new Error('historical OCR page concurrency must be 1 or 2');
+  }
   const pages = [];
   let processed = 0;
 
+  const missingPages = [];
+  for (let page = 1; page <= pageCount && missingPages.length < pageBudget; page += 1) {
+    const filename = path.join(pageDir, `page-${String(page).padStart(4, '0')}.txt`);
+    if (!(await fileExists(filename))) missingPages.push({ page, filename });
+  }
+  const processPage = async ({ page, filename }) => {
+    const prefix = path.join(temporaryDir, `ocr-${sourceChecksum.slice(0, 12)}-${page}-${crypto.randomUUID()}`);
+    const imageFilename = `${prefix}.png`;
+    try {
+      await runCommand(options.pdftoppmCommand || 'pdftoppm', [
+        '-f', String(page), '-l', String(page), '-r', String(profile.dpi),
+        '-png', '-singlefile', pdfFilename, prefix
+      ], options);
+      const result = await runCommand(options.tesseractCommand || 'tesseract', [
+        imageFilename, 'stdout', '-l', profile.languages,
+        '--oem', String(profile.oem), '--psm', String(profile.psm)
+      ], options);
+      await atomicCacheWrite(filename, Buffer.from(normalizePdfText(result.stdout), 'utf8'));
+    } finally {
+      await fs.promises.unlink(imageFilename).catch(() => {});
+    }
+  };
+  for (let index = 0; index < missingPages.length; index += pageConcurrency) {
+    const batch = missingPages.slice(index, index + pageConcurrency);
+    const settled = await Promise.allSettled(batch.map(processPage));
+    processed += settled.filter((entry) => entry.status === 'fulfilled').length;
+    const failed = settled.find((entry) => entry.status === 'rejected');
+    if (failed) throw failed.reason;
+  }
+
   for (let page = 1; page <= pageCount; page += 1) {
     const filename = path.join(pageDir, `page-${String(page).padStart(4, '0')}.txt`);
-    if (!(await fileExists(filename))) {
-      if (processed >= pageBudget) continue;
-      const prefix = path.join(temporaryDir, `ocr-${sourceChecksum.slice(0, 12)}-${page}-${crypto.randomUUID()}`);
-      const imageFilename = `${prefix}.png`;
-      try {
-        await runCommand(options.pdftoppmCommand || 'pdftoppm', [
-          '-f', String(page), '-l', String(page), '-r', String(profile.dpi),
-          '-png', '-singlefile', pdfFilename, prefix
-        ], options);
-        const result = await runCommand(options.tesseractCommand || 'tesseract', [
-          imageFilename, 'stdout', '-l', profile.languages,
-          '--oem', String(profile.oem), '--psm', String(profile.psm)
-        ], options);
-        await atomicCacheWrite(filename, Buffer.from(normalizePdfText(result.stdout), 'utf8'));
-        processed += 1;
-      } finally {
-        await fs.promises.unlink(imageFilename).catch(() => {});
-      }
-    }
     if (await fileExists(filename)) {
       const text = await fs.promises.readFile(filename, 'utf8');
       pages.push({ page, text, filename, checksum: sha256(text), byteSize: Buffer.byteLength(text) });
@@ -591,6 +606,7 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
       ocrDpi: options.ocrDpi,
       ocrPsm: options.ocrPsm,
       ocrOem: options.ocrOem,
+      ocrPageConcurrency: options.ocrPageConcurrency,
       timeoutMs: options.toolTimeoutMs
     });
     ocrProfile = ocr.profile || historicalOcrProfile(options);

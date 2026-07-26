@@ -13,7 +13,7 @@ EnvironmentFile=/etc/policy-monitor/policy-monitor.env
 Environment=NODE_ENV=production
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-discover --from-year 1949 --max-items 100
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-process --adaptive-load --min-items 5 --max-items 100 --delay-ms 5000
-ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --ocr-languages chi_sim+chi_tra+eng --ocr-dpi 300 --ocr-psm 3 --ocr-oem 1 --delay-ms 5000
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --ocr-languages chi_sim+chi_tra+eng --ocr-dpi 300 --ocr-psm 3 --ocr-oem 1 --ocr-page-concurrency 2 --delay-ms 5000
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-verify --adaptive-load --min-items 5 --max-items 100
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-evidence --adaptive-load --min-items 5 --max-items 100
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-analyze --adaptive-load --min-items 5 --max-items 100
@@ -21,7 +21,7 @@ ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-
 ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-release --adaptive-load --min-items 5 --max-items 100
 ExecStartPost=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-audit
 TimeoutStartSec=50min
-MemoryMax=512M
+MemoryMax=768M
 CPUQuota=150%
 NoNewPrivileges=true
 PrivateTmp=true

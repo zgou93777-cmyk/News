@@ -359,6 +359,35 @@ test('OCR profile upgrades do not reuse unversioned page text', async () => {
   }
 });
 
+test('OCR page concurrency is bounded and preserves page order', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-ocr-concurrency-'));
+  let active = 0;
+  let maximumActive = 0;
+  try {
+    const result = await ocrPdfPages('source.pdf', 'f'.repeat(64), {
+      cacheDir,
+      pageBudget: 3,
+      pageConcurrency: 2,
+      pageCount: async () => 3,
+      commandImpl: async (name, args) => {
+        if (name !== 'tesseract') return { stdout: '' };
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return { stdout: `text ${path.basename(args[0])}` };
+      }
+    });
+
+    assert.equal(result.complete, true);
+    assert.equal(result.pagesProcessed, 3);
+    assert.equal(maximumActive, 2);
+    assert.deepEqual(result.pages.map((page) => page.page), [1, 2, 3]);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
 test('stale OCR artifacts are requeued once until the current profile starts', () => {
   const db = openDatabase(':memory:');
   try {
