@@ -6,19 +6,24 @@ const { adaptiveBatchSize, currentLoadSnapshot, loadHistoricalSources } = requir
 const { officialEvidenceUrl } = require('./historical-review');
 
 const DOCUMENT_NUMBER_PATTERNS = [
-  /(?:国发|国办发|国函|国办函|国令|中发|中办发|发改|财税|银发|建发|商发|人社部发|卫政法发)[〔\[(（](?:19|20)\d{2}[〕\])）]\s*\d+\s*号/gu,
+  /(?:国发|国办发|国函|国办函|国令|中发|中办发|发改|财税|银发|建发|商发|人社部发|卫政法发)\s*[〔\[(（]\s*(?:19|20)\d{2}\s*[〕\])）]\s*\d+\s*号/gu,
   /(?:中华人民共和国)?(?:国务院|主席)令\s*第?\s*\d+\s*号/gu,
-  /[\p{Script=Han}]{1,12}[〔\[(（](?:19|20)\d{2}[〕\])）]\s*\d+\s*号/gu,
-  /[（(](?:19|20)\d{2}[）)]\s*[\p{Script=Han}]{1,16}第?\s*\d+\s*号/gu
+  /[\p{Script=Han}]{1,12}\s*[〔\[(（]\s*(?:19|20)\d{2}\s*[〕\])）]\s*\d+\s*号/gu,
+  /[（(]\s*(?:19|20)\d{2}\s*[）)]\s*[\p{Script=Han}]{1,16}第?\s*\d+\s*号/gu,
+  /[（(]\s*(?:19)?\d{2}\s*[）)]\s*[\p{Script=Han}]{1,16}(?:字)?第?\s*\d+\s*号/gu,
+  /(?:中央人民政府|政务院|国务院)[\p{Script=Han}]{0,12}(?:字)?第?\s*\d+\s*号/gu
 ];
 const DATE_PATTERN = /((?:19|20)\d{2}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日|[一二三四五六七八九〇○零]{4}\s*年\s*[一二三四五六七八九十廿]{1,3}\s*月\s*[一二三四五六七八九十廿]{1,3}\s*日)/gu;
 const REPEAL_PATTERN = /废止|停止执行|停止施行|不再执行|宣布失效|予以失效/u;
 const SUPERSEDE_PATTERN = /替代|取代|代替|以本(?:办法|规定|通知|决定|条例)为准/u;
 const KNOWN_ISSUERS = [
+  '全国人民代表大会常务委员会', '中央人民政府政务院', '中央人民政府委员会', '中央人民政府',
+  '中国人民政治协商会议全国委员会',
   '国务院办公厅', '国务院', '国家发展和改革委员会', '财政部', '商务部', '住房和城乡建设部',
   '人力资源和社会保障部', '农业农村部', '工业和信息化部', '自然资源部', '生态环境部',
   '教育部', '民政部', '司法部', '公安部', '交通运输部', '水利部', '文化和旅游部',
-  '国家卫生健康委员会', '中国人民银行', '国家统计局', '国家市场监督管理总局'
+  '国家卫生健康委员会', '中国人民银行', '国家统计局', '国家市场监督管理总局',
+  '外交部', '内务部', '劳动部', '贸易部', '重工业部', '第一机械工业部'
 ];
 
 function sha256(value) {
@@ -36,6 +41,19 @@ function evidenceLine(text, index) {
   const next = String(text).indexOf('\n', index);
   const end = next < 0 ? String(text).length : next;
   return String(text).slice(start, end).replace(/\s+/g, ' ').trim().slice(0, 500);
+}
+
+function normalizedEvidenceSpan(text, expected, maximumLines = 3) {
+  const target = String(expected || '').replace(/\s+/g, '');
+  if (!target) return null;
+  const lines = String(text || '').split('\n');
+  for (let start = 0; start < lines.length; start += 1) {
+    for (let count = 1; count <= maximumLines && start + count <= lines.length; count += 1) {
+      const quote = lines.slice(start, start + count).join(' ').replace(/\s+/g, ' ').trim();
+      if (quote.replace(/\s+/g, '').includes(target)) return quote.slice(0, 500);
+    }
+  }
+  return null;
 }
 
 function chineseNumber(value) {
@@ -84,6 +102,7 @@ function extractDocumentNumbers(text) {
   for (const pattern of DOCUMENT_NUMBER_PATTERNS) {
     for (const match of String(text || '').matchAll(pattern)) {
       const value = match[0].replace(/\s+/g, '');
+      if (found.some((entry) => value.endsWith(entry.value) && match.index <= entry.index)) continue;
       if (!found.some((entry) => entry.value === value)) {
         found.push({ value, quote: evidenceLine(text, match.index), index: match.index });
       }
@@ -92,13 +111,22 @@ function extractDocumentNumbers(text) {
   return found.sort((left, right) => left.index - right.index);
 }
 
+function documentNumberKey(value) {
+  return String(value || '')
+    .replace(/\s+/g, '')
+    .replace(/[\[(（]/gu, '〔')
+    .replace(/[\])）]/gu, '〕');
+}
+
 function extractIssuerEvidence(item) {
   const text = String(item.content_text || '');
   const title = String(item.title || '').replace(/\s+/g, '');
   const existing = String(item.issuer || '').trim();
   if (existing) {
-    const index = text.indexOf(existing);
-    if (index >= 0) return { value: existing, quote: evidenceLine(text, index), confidence: 1 };
+    const quote = normalizedEvidenceSpan(text, existing, 1);
+    if ((title.startsWith(existing.replace(/\s+/g, '')) || text.split('\n').slice(-16).some((line) => line.replace(/\s+/g, '') === existing.replace(/\s+/g, ''))) && quote) {
+      return { value: existing, quote, confidence: 1 };
+    }
   }
   for (const issuer of KNOWN_ISSUERS) {
     const titleIndex = title.indexOf(issuer);
@@ -110,8 +138,10 @@ function extractIssuerEvidence(item) {
   const lines = text.split('\n').map((line) => line.replace(/\s+/g, '').trim()).filter(Boolean);
   const edgeLines = [...lines.slice(0, 8), ...lines.slice(-16)];
   for (const line of edgeLines.reverse()) {
-    const match = line.match(/^(?:中华人民共和国)?[\p{Script=Han}·]{2,50}(?:国务院|办公厅|人民政府|人民银行|委员会|总局|部|署)$/u);
-    if (match) return { value: match[0].replace(/^中华人民共和国(?=国务院)/u, ''), quote: line, confidence: 0.97 };
+    const match = line.match(/^(?:中华人民共和国)?[\p{Script=Han}·]{2,50}(?:国务院|政务院|办公厅|人民政府|人民银行|委员会|总局|部|署)$/u);
+    if (match && !/(?:本|由|负责|执行|依照|通知|规定|办法|决定)/u.test(line)) {
+      return { value: match[0].replace(/^中华人民共和国(?=国务院)/u, ''), quote: line, confidence: 0.97 };
+    }
   }
   const number = extractDocumentNumbers(text)[0]?.value || '';
   if (/^国办/u.test(number)) return { value: '国务院办公厅', quote: extractDocumentNumbers(text)[0].quote, confidence: 0.95 };
@@ -125,17 +155,23 @@ function extractPublishedEvidence(item, documentNumber) {
   const numberYear = Number(String(documentNumber || '').match(/(?:19|20)\d{2}/)?.[0]);
   const ranked = dateMentions(text).map((mention) => {
     const year = Number(mention.value.slice(0, 4));
-    const context = text.slice(Math.max(0, mention.index - 80), mention.index + mention.raw.length + 80);
+    const context = evidenceLine(text, mention.index);
+    const lineNumber = text.slice(0, mention.index).split('\n').length;
+    const nearEnd = mention.index >= text.length * 0.65;
+    const standalone = mention.quote.replace(/\s+/g, '') === mention.raw;
+    const explicitPublication = /成文|签发|发布|印发|公布|制定|(?:会议|大会).{0,24}(?:通过|批准)|(?:通过|批准).{0,24}(?:会议|大会)/u.test(context);
     let score = 0;
     if (year === sourceYear) score += 4;
     if (year === numberYear) score += 2;
-    if (mention.index >= text.length * 0.65) score += 2;
-    if (mention.quote.replace(/\s+/g, '') === mention.raw) score += 3;
-    if (/成文|签发|发布|印发/u.test(context)) score += 2;
+    if (nearEnd) score += 2;
+    if (standalone) score += 3;
+    if (/成文|签发|发布|印发|公布|制定/u.test(context)) score += 3;
+    if (/(?:会议|大会).{0,24}(?:通过|批准)|(?:通过|批准).{0,24}(?:会议|大会)/u.test(context)) score += 4;
     if (/施行|实施|执行|生效|废止|失效|有效期/u.test(context)) score -= 7;
-    return { ...mention, score };
+    return { ...mention, score, publicationSignal: explicitPublication || (standalone && (nearEnd || lineNumber <= 6)) };
   }).sort((left, right) => right.score - left.score || right.index - left.index);
-  return ranked[0]?.score >= 4 ? { ...ranked[0], confidence: Math.min(0.99, 0.75 + ranked[0].score * 0.025) } : null;
+  const selected = ranked.find((mention) => mention.score >= 4 && mention.publicationSignal);
+  return selected ? { ...selected, confidence: Math.min(0.99, 0.75 + selected.score * 0.025) } : null;
 }
 
 function sentenceAt(text, index) {
@@ -166,15 +202,23 @@ function extractEffectiveEvidence(item, publishedAt) {
 function extractExplicitEndEvidence(item) {
   const text = String(item.content_text || '');
   for (const mention of dateMentions(text)) {
-    const context = text.slice(Math.max(0, mention.index - 40), mention.index + mention.raw.length + 40);
-    if (/有效期(?:至|截止到?)|自.{0,12}起(?:废止|停止执行|停止施行|失效)/u.test(context)) {
-      return { value: mention.value, quote: sentenceAt(text, mention.index), confidence: 0.99 };
+    const quote = sentenceAt(text, mention.index);
+    const selfReference = /本(?:条例|规定|办法|通知|决定|细则|规则|意见|方案|文件|政策)/u.test(quote);
+    if (selfReference && (/有效期(?:至|截止到?)/u.test(quote)
+      || /自.{0,20}起(?:废止|停止执行|停止施行|失效)/u.test(quote))) {
+      return { value: mention.value, quote, confidence: 0.99 };
     }
   }
   return null;
 }
 
 function upsertEvidence(db, evidence) {
+  if (evidence.status === 'verified') {
+    db.prepare(`
+      DELETE FROM historical_verification_evidence
+      WHERE item_id = ? AND claim_type = ? AND status = 'not_found'
+    `).run(evidence.itemId, evidence.claimType);
+  }
   return Number(db.prepare(`
     INSERT INTO historical_verification_evidence (
       item_id, source_item_id, claim_type, status, value_text, evidence_quote,
@@ -196,7 +240,7 @@ function upsertEvidence(db, evidence) {
     evidence.quote || '',
     evidence.sourceUrl || '',
     evidence.searchScope || '',
-    evidence.extractor || 'historical-metadata-v1',
+    evidence.extractor || 'historical-metadata-v2',
     evidence.confidence ?? 1,
     evidence.observedAt || null
   ).id);
@@ -206,9 +250,9 @@ function metadataEvidence(item) {
   if (!checksumMatches(item)) throw new Error('queued source text checksum does not match');
   const sourceUrl = officialEvidenceUrl(item.source_url);
   const text = String(item.content_text || '');
-  const titleIndex = text.replace(/\s+/g, '').indexOf(String(item.title || '').replace(/\s+/g, ''));
-  const title = titleIndex >= 0 && item.title
-    ? { value: item.title.trim(), quote: evidenceLine(text, Math.max(0, text.indexOf(item.title.trim()))), confidence: 1 }
+  const titleQuote = normalizedEvidenceSpan(text, item.title, 3);
+  const title = titleQuote && item.title
+    ? { value: item.title.trim(), quote: titleQuote, confidence: 1 }
     : null;
   const documentNumber = extractDocumentNumbers(text)[0] || null;
   const issuer = extractIssuerEvidence(item);
@@ -355,6 +399,7 @@ function archiveCoverageComplete(db, sourceYear, options = {}) {
   const unresolved = Number(db.prepare(`
     SELECT count(*) AS count FROM historical_backfill_items
     WHERE coalesce(source_year, 9999) >= ?
+      AND source_status <> 'rejected'
       AND (
         (item_kind IN ('index', 'issue') AND stage NOT IN ('indexed', 'published'))
         OR (item_kind = 'document' AND stage IN ('discovered', 'failed', 'manual_review'))
@@ -366,9 +411,11 @@ function archiveCoverageComplete(db, sourceYear, options = {}) {
 
 function relationSentences(text, documentNumber) {
   if (!documentNumber) return [];
+  const expected = documentNumberKey(documentNumber);
   return String(text || '').split(/(?<=[。！？])|\n/u)
     .map((sentence) => sentence.replace(/\s+/g, ' ').trim())
-    .filter((sentence) => sentence.includes(documentNumber) && (REPEAL_PATTERN.test(sentence) || SUPERSEDE_PATTERN.test(sentence)));
+    .filter((sentence) => extractDocumentNumbers(sentence).some((number) => documentNumberKey(number.value) === expected)
+      && (REPEAL_PATTERN.test(sentence) || SUPERSEDE_PATTERN.test(sentence)));
 }
 
 function upsertRelation(db, predecessor, successor, relationType, quote, observedAt) {
@@ -381,7 +428,7 @@ function upsertRelation(db, predecessor, successor, relationType, quote, observe
     value: successor.document_number || successor.title,
     quote,
     sourceUrl,
-    extractor: 'official-lifecycle-link-v1',
+    extractor: 'official-lifecycle-link-v2',
     confidence: 1,
     observedAt
   });
@@ -399,15 +446,16 @@ function findLifecycleRelation(db, item) {
   if (!item.document_number) return null;
   const candidates = db.prepare(`
     SELECT * FROM historical_backfill_items
-    WHERE id <> ? AND item_kind = 'document' AND instr(content_text, ?) > 0
-      AND coalesce(source_year, 0) >= coalesce(?, 0)
+    WHERE id <> ? AND item_kind = 'document'
+      AND source_status = 'verified' AND metadata_status = 'verified'
+      AND published_at IS NOT NULL AND coalesce(source_year, 0) >= coalesce(?, 0)
     ORDER BY coalesce(published_at, '9999'), id
-  `).all(item.id, item.document_number, item.source_year);
+  `).all(item.id, item.source_year);
   for (const candidate of candidates) {
     const quote = relationSentences(candidate.content_text, item.document_number)[0];
     if (!quote) continue;
-    const published = candidate.published_at || extractPublishedEvidence(candidate, candidate.document_number)?.value;
-    if (!published) continue;
+    const published = candidate.published_at;
+    if (item.published_at && Date.parse(published) < Date.parse(item.published_at)) continue;
     const relationType = REPEAL_PATTERN.test(quote) ? 'repeals' : 'supersedes';
     return { successor: candidate, quote, relationType, endedAt: published };
   }
@@ -423,17 +471,49 @@ function linkPredecessorsMentionedByItem(db, item) {
     .filter((sentence) => REPEAL_PATTERN.test(sentence) || SUPERSEDE_PATTERN.test(sentence));
   for (const sentence of sentences) {
     for (const number of extractDocumentNumbers(sentence)) {
-      if (number.value === ownNumber) continue;
-      const predecessor = db.prepare(`
-        SELECT * FROM historical_backfill_items WHERE document_number = ? AND id <> ? LIMIT 1
-      `).get(number.value, item.id);
-      if (!predecessor) continue;
+      if (documentNumberKey(number.value) === documentNumberKey(ownNumber)) continue;
+      const matches = db.prepare(`
+        SELECT * FROM historical_backfill_items
+        WHERE trim(document_number) <> '' AND id <> ?
+          AND source_status = 'verified' AND metadata_status = 'verified'
+      `).all(item.id).filter((candidate) => documentNumberKey(candidate.document_number) === documentNumberKey(number.value));
+      if (matches.length !== 1) continue;
+      const predecessor = matches[0];
+      if (predecessor.published_at && Date.parse(predecessor.published_at) > Date.parse(item.published_at)) continue;
       const relationType = REPEAL_PATTERN.test(sentence) ? 'repeals' : 'supersedes';
       upsertRelation(db, predecessor, item, relationType, sentence, item.published_at);
+      upsertEvidence(db, {
+        itemId: predecessor.id,
+        sourceItemId: item.id,
+        claimType: 'repealed_at',
+        status: 'verified',
+        value: item.published_at,
+        quote: sentence,
+        sourceUrl: officialEvidenceUrl(item.source_url),
+        extractor: 'official-lifecycle-link-v2',
+        confidence: 1,
+        observedAt: item.published_at
+      });
+      let cycle = {};
+      try {
+        cycle = JSON.parse(predecessor.policy_cycle_json || '{}');
+      } catch {
+        cycle = {};
+      }
+      cycle.endedAt = item.published_at;
+      cycle.endedStatus = 'verified';
+      cycle.archiveCoverageComplete = true;
+      cycle.searchScope = 'explicit official lifecycle evidence found';
+      cycle.checkedAt = new Date().toISOString();
       db.prepare(`
-        UPDATE historical_backfill_items SET repealed_at = coalesce(repealed_at, ?),
-          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
-      `).run(item.published_at, predecessor.id);
+        UPDATE historical_backfill_items SET
+          repealed_at = ?, lifecycle_status = 'verified', policy_cycle_json = ?,
+          stage = CASE WHEN stage IN ('source_verified', 'ready') THEN 'lifecycle_verified' ELSE stage END,
+          analysis_status = CASE WHEN stage = 'ready' THEN 'pending' ELSE analysis_status END,
+          last_error = '', next_attempt_at = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ?
+      `).run(item.published_at, JSON.stringify(cycle), predecessor.id);
       linked += 1;
     }
   }
@@ -501,7 +581,7 @@ function verifyLifecycle(db, item, options = {}) {
         value: relation.endedAt,
         quote: relation.quote,
         sourceUrl: officialEvidenceUrl(relation.successor.source_url),
-        extractor: 'official-lifecycle-link-v1',
+        extractor: 'official-lifecycle-link-v2',
         confidence: 1,
         observedAt: relation.endedAt
       });
@@ -512,7 +592,7 @@ function verifyLifecycle(db, item, options = {}) {
         claimType: 'repealed_at',
         status: 'not_found',
         searchScope: coverage.reason,
-        extractor: 'official-archive-corpus-v1',
+        extractor: 'official-archive-corpus-v2',
         confidence: 1
       });
     }
@@ -624,6 +704,7 @@ module.exports = {
   dateMentions,
   extractDocumentNumbers,
   extractEffectiveEvidence,
+  extractExplicitEndEvidence,
   extractIssuerEvidence,
   extractPublishedEvidence,
   metadataEvidence,
