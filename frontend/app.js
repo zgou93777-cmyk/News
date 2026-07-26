@@ -431,6 +431,31 @@
     return [];
   }
 
+  function normalizeFramework(value) {
+    let framework = value;
+    if (typeof framework === "string") {
+      try {
+        framework = JSON.parse(framework);
+      } catch {
+        framework = null;
+      }
+    }
+    if (!framework || typeof framework !== "object" || Array.isArray(framework)) return null;
+    return {
+      ready: framework.ready === true,
+      perspective: framework.perspective || "公共政策执行与实际影响",
+      perspectiveNote: framework.perspectiveNote || framework.perspective_note || "",
+      bottomLine: framework.bottomLine || framework.bottom_line || "",
+      problem: framework.problem || framework.policyProblem || framework.policy_problem || "",
+      tools: normalizeList(framework.tools || framework.policyTools || framework.policy_tools),
+      affectedGroups: normalizeList(framework.affectedGroups || framework.affected_groups),
+      executionPath: normalizeList(framework.executionPath || framework.execution_path),
+      historicalChanges: normalizeList(framework.historicalChanges || framework.historical_changes),
+      confirmed: normalizeList(framework.confirmed),
+      unconfirmed: normalizeList(framework.unconfirmed)
+    };
+  }
+
   function normalizeSpeechText(value) {
     if (typeof value !== "string") return "";
     return value
@@ -567,6 +592,7 @@
       contentText: options.includeNarration === true ? extractNarrationText(raw) : "",
       content: raw.content || raw.body || raw.analysis_content || analysis.content || [],
       analysisLead: raw.analysis_lead || raw.analysisLead || raw.key_judgement || analysis.lead || raw.summary || "",
+      analysisFramework: normalizeFramework(raw.analysis_framework || raw.analysisFramework || analysis.framework),
       analysisVersion: Number(raw.analysis_version || raw.analysisVersion || 0) || null,
       neighbors: raw.neighbors && typeof raw.neighbors === "object" ? raw.neighbors : null,
       analysisHistory: normalizeList(raw.analysis_history || raw.analysisHistory || analysis.history),
@@ -1034,10 +1060,7 @@
   }
 
   function comparisonRows(article) {
-    const list = article.comparisons.length ? article.comparisons : [
-      { dimension: "政策重点", previous: "历史口径待补录", current: "当前政策口径已收录", implication: "等待更多公开材料后形成可核验对比" }
-    ];
-    return list.map((item) => `
+    return article.comparisons.map((item) => `
       <tr>
         <td>${escapeHTML(item.dimension || item.aspect || item.name || "比较项")}</td>
         <td>${escapeHTML(item.previous || item.before || item.historical || "待补充")}</td>
@@ -1068,13 +1091,13 @@
     if (!article.ambiguities.length) return "";
     return `
       <section class="article-section" aria-labelledby="ambiguity-title">
-        <h2 id="ambiguity-title">尚存歧义</h2>
-        <p class="article-section-intro">以下问题尚不能从现有公开材料中得到唯一结论。</p>
+        <h2 id="ambiguity-title">哪些问题还不能下结论</h2>
+        <p class="article-section-intro">这里记录的是证据冲突和信息缺口，不是含糊其辞的“有待观察”。</p>
         <div class="ambiguity-list">
           ${article.ambiguities.map((item) => `
             <article class="ambiguity-item">
               <div>${statusBadge("ambiguous")}</div>
-              <div><h3>${escapeHTML(item.issue || item.title || "待澄清问题")}</h3><p>${escapeHTML(item.why || item.reason || item.description || "")}${item.nextEvidence || item.next_evidence ? ` 后续验证：${escapeHTML(item.nextEvidence || item.next_evidence)}` : ""}</p></div>
+              <div><h3>${escapeHTML(item.issue || item.title || "待澄清问题")}</h3><p>${escapeHTML(item.why || item.reason || item.description || "")}</p>${item.nextEvidence || item.next_evidence ? `<p class="verification-target"><strong>怎样才能确认：</strong>${escapeHTML(item.nextEvidence || item.next_evidence)}</p>` : ""}</div>
             </article>`).join("")}
         </div>
       </section>`;
@@ -1084,13 +1107,13 @@
     if (!article.predictions.length) return "";
     return `
       <section class="article-section" aria-labelledby="prediction-title">
-        <h2 id="prediction-title">前瞻信号</h2>
-        <p class="article-section-intro">预判均附带触发条件，不把可能性写成确定事实。</p>
+        <h2 id="prediction-title">接下来最值得观察什么</h2>
+        <p class="article-section-intro">每条预判都给出成立理由、验证时间和当前置信度；未到验证节点前不是事实。</p>
         <div class="signal-list">
           ${article.predictions.map((item) => `
             <article class="signal-item">
               <div class="signal-meta"><span class="outlook-label">${escapeHTML(item.timeframe || item.window || "后续观察")}</span><span class="confidence">置信度 ${escapeHTML(item.confidence || "待评估")}</span></div>
-              <div><h3>${escapeHTML(item.signal || item.title || "政策信号")}</h3><p>${escapeHTML(item.trigger || item.condition || item.description || "")}</p></div>
+              <div><h3>${escapeHTML(item.signal || item.title || "政策信号")}</h3><p><strong>为什么这样判断：</strong>${escapeHTML(item.trigger || item.condition || item.description || "")}</p></div>
             </article>`).join("")}
         </div>
       </section>`;
@@ -1100,8 +1123,8 @@
     if (!article.analysisHistory.length) return "";
     return `
       <section class="article-section" aria-labelledby="version-history-title">
-        <h2 id="version-history-title">研判版本记录</h2>
-        <p class="article-section-intro">旧版本不会被覆盖；可以回看当时的判断，以及新证据如何改变当前结论。</p>
+        <h2 id="version-history-title">这个结论是怎么变化的</h2>
+        <p class="article-section-intro">旧结论不会被覆盖。这里说明当时怎么判断，以及后来增加了什么证据或边界。</p>
         <div class="version-history">
           ${article.analysisHistory.map((version, index) => {
             const isCurrent = article.analysisVersion
@@ -1121,6 +1144,107 @@
           }).join("")}
         </div>
       </section>`;
+  }
+
+  function frameworkEntry(item, fallbackLabel) {
+    if (typeof item === "string") return { label: fallbackLabel, detail: item };
+    if (!item || typeof item !== "object") return { label: fallbackLabel, detail: "" };
+    return {
+      label: item.label || item.name || item.group || item.step || item.tool || item.title || fallbackLabel,
+      detail: item.detail || item.effect || item.mechanism || item.action || item.condition || item.description || ""
+    };
+  }
+
+  function frameworkList(items, fallbackLabel) {
+    return items.map((item) => {
+      const entry = frameworkEntry(item, fallbackLabel);
+      return `<li><strong>${escapeHTML(entry.label)}</strong><span>${escapeHTML(entry.detail)}</span></li>`;
+    }).join("");
+  }
+
+  function policyVerdict(article) {
+    const framework = article.analysisFramework;
+    const conclusion = framework?.bottomLine || article.review.conclusion || article.analysisLead;
+    const perspective = framework?.perspective || "公共政策执行与实际影响";
+    const note = framework?.perspectiveNote
+      || "从政策公开目标出发，依次看政策工具、执行责任、受影响对象和实际结果。";
+    return `
+      <section class="policy-verdict" aria-labelledby="verdict-title">
+        <div class="verdict-heading"><p class="eyebrow">结论先行</p>${statusBadge(article.review.status)}</div>
+        <h2 id="verdict-title">${escapeHTML(conclusion)}</h2>
+        <div class="analysis-perspective">
+          <span><i data-lucide="scan-search" aria-hidden="true"></i>分析视角</span>
+          <p><strong>${escapeHTML(perspective)}</strong>：${escapeHTML(note)}</p>
+        </div>
+      </section>`;
+  }
+
+  function policyFramework(article) {
+    const framework = article.analysisFramework;
+    if (!framework?.ready) {
+      return `
+        <section class="article-section" aria-labelledby="framework-title">
+          <h2 id="framework-title">政策怎么理解</h2>
+          <div class="analysis-unavailable"><i data-lucide="file-search" aria-hidden="true"></i><div><strong>结构化解读尚未完成</strong><p>当前记录还没有同时通过政策问题、工具、影响对象和执行路径四项复核，因此暂不展示推断式拆解。</p></div></div>
+        </section>`;
+    }
+    return `
+      <section class="article-section" aria-labelledby="framework-title">
+        <h2 id="framework-title">政策怎么理解</h2>
+        <p class="article-section-intro">把政策语言还原成“为什么做、用什么办法、影响谁、怎样落地”。</p>
+        <div class="policy-logic">
+          <div class="logic-row logic-problem"><div class="logic-label"><span>01</span><strong>要解决的问题</strong></div><p>${escapeHTML(framework.problem)}</p></div>
+          <div class="logic-row"><div class="logic-label"><span>02</span><strong>使用什么工具</strong></div><ul>${frameworkList(framework.tools, "政策工具")}</ul></div>
+          <div class="logic-row"><div class="logic-label"><span>03</span><strong>具体影响谁</strong></div><ul>${frameworkList(framework.affectedGroups, "影响对象")}</ul></div>
+          <div class="logic-row"><div class="logic-label"><span>04</span><strong>怎样真正落地</strong></div><ol>${frameworkList(framework.executionPath, "执行环节")}</ol></div>
+        </div>
+      </section>`;
+  }
+
+  function historicalChangeSection(article) {
+    if (!article.comparisons.length) {
+      return `
+        <section class="article-section" aria-labelledby="comparison-title">
+          <h2 id="comparison-title">跟过去相比，变了什么</h2>
+          <div class="analysis-unavailable compact"><i data-lucide="git-compare-arrows" aria-hidden="true"></i><div><strong>暂无可核验的往期差异</strong><p>当前没有更早的同政策脉络原文，或实质差异尚未完成逐条核对。</p></div></div>
+        </section>`;
+    }
+    return `
+      <section class="article-section" aria-labelledby="comparison-title">
+        <h2 id="comparison-title">跟过去相比，变了什么</h2>
+        <p class="article-section-intro">只比较同一政策脉络中的目标、工具和执行逻辑，不用标题变化代替实质变化。</p>
+        <div class="comparison-wrap">
+          <table class="comparison-table">
+            <thead><tr><th>比较维度</th><th>过去怎么做</th><th>现在怎么做</th><th>意味着什么</th></tr></thead>
+            <tbody>${comparisonRows(article)}</tbody>
+          </table>
+        </div>
+      </section>`;
+  }
+
+  function evidenceBoundary(article) {
+    const framework = article.analysisFramework;
+    if (!framework?.confirmed.length && !framework?.unconfirmed.length) return "";
+    const renderItems = (items) => items.map((item) => {
+      const text = typeof item === "string" ? item : item.statement || item.detail || item.description || "";
+      return `<li>${escapeHTML(text)}</li>`;
+    }).join("");
+    return `
+      <section class="article-section" aria-labelledby="boundary-title">
+        <h2 id="boundary-title">目前能确认到哪一步</h2>
+        <div class="evidence-boundary">
+          <div class="boundary-confirmed"><h3><i data-lucide="badge-check" aria-hidden="true"></i>已有依据</h3><ul>${renderItems(framework.confirmed)}</ul></div>
+          <div class="boundary-unconfirmed"><h3><i data-lucide="circle-help" aria-hidden="true"></i>不能外推</h3><ul>${renderItems(framework.unconfirmed)}</ul></div>
+        </div>
+      </section>`;
+  }
+
+  function originalTextSection(article) {
+    return `
+      <details class="source-text">
+        <summary><span><i data-lucide="file-text" aria-hidden="true"></i>查看收录的政策原文</span><i data-lucide="chevron-down" aria-hidden="true"></i></summary>
+        <div class="article-prose">${renderContent(article.content)}</div>
+      </details>`;
   }
 
   function renderArticle(article) {
@@ -1149,6 +1273,7 @@
               <i data-lucide="chevron-right" aria-hidden="true"></i>
             </a>
           </header>
+          ${policyVerdict(article)}
           <figure>
             <img class="article-hero" data-article-cover src="${escapeHTML(safeImageUrl(article.heroImage))}" alt="${escapeHTML(article.imageCaption || article.title)}">
             ${article.imageCaption ? `<figcaption class="image-caption">${escapeHTML(article.imageCaption)}</figcaption>` : ""}
@@ -1156,40 +1281,30 @@
 
           <div class="article-layout">
             <div class="article-body">
-              <div class="analysis-lead"><p class="eyebrow">核心判断</p><strong>${escapeHTML(article.analysisLead)}</strong></div>
-              <div class="article-prose">${renderContent(article.content)}</div>
-
-              ${analysisVersionHistory(article)}
-
-              <section class="article-section" aria-labelledby="comparison-title">
-                <h2 id="comparison-title">历史政策对比</h2>
-                <p class="article-section-intro">对比的是政策口径和执行逻辑，不以文件标题变化代替实质变化。</p>
-                <div class="comparison-wrap">
-                  <table class="comparison-table">
-                    <thead><tr><th>比较维度</th><th>往期政策</th><th>当前政策</th><th>落地影响</th></tr></thead>
-                    <tbody>${comparisonRows(article)}</tbody>
-                  </table>
-                </div>
-              </section>
+              ${policyFramework(article)}
+              ${historicalChangeSection(article)}
+              ${evidenceBoundary(article)}
 
               <section class="article-section" aria-labelledby="evidence-title">
-                <h2 id="evidence-title">落地证据时间线</h2>
-                <p class="article-section-intro">每个结论保留出处和复核日期，后续证据可改变当前状态。</p>
+                <h2 id="evidence-title">结论依据</h2>
+                <p class="article-section-intro">正式发文只证明政策已经发布；实施、资金和结果必须由后续公开证据分别确认。</p>
                 <div class="evidence-timeline">${evidenceTimeline(article)}</div>
               </section>
 
               ${ambiguityList(article)}
               ${predictionList(article)}
-              <p class="method-note">最后复核：${escapeHTML(formatDate(article.review.verifiedAt))}。状态标签只描述当前证据强度；新文件、执行数据或权威说明出现后，本文结论会继续修订并保留历史版本。</p>
+              ${analysisVersionHistory(article)}
+              ${originalTextSection(article)}
+              <p class="method-note"><strong>复核口径：</strong>最后复核回答的是“政策目标是否已经进入执行、资金或项目是否发生、结果是否出现”，不评价政策立场，也不构成投资建议。最后复核于 ${escapeHTML(formatDate(article.review.verifiedAt))}；新证据出现后会新增版本，不覆盖旧判断。</p>
             </div>
 
             <aside class="article-aside" aria-label="文章信息">
               <section class="aside-block">
-                <h2>当前复盘</h2>
+                <h2>当前证据状态</h2>
                 <div class="review-stamp status-${escapeHTML(article.review.status)}">
                   ${statusBadge(article.review.status)}
                   <strong>${escapeHTML(article.review.conclusion)}</strong>
-                  <p>证据置信度：${escapeHTML(article.review.confidence)}</p>
+                  <p>综合置信度：${escapeHTML(article.review.confidence)}</p>
                 </div>
               </section>
               <section class="aside-block">
@@ -1599,6 +1714,7 @@
         ...rawArticle,
         neighbors: detail?.neighbors || rawArticle?.neighbors,
         analysisHistory: detail?.analysisHistory || rawArticle?.analysisHistory,
+        analysisFramework: detail?.currentAnalysis?.framework || rawArticle?.analysisFramework,
         assessmentSnapshots: detail?.assessmentSnapshots || rawArticle?.assessmentSnapshots
       };
       const normalized = normalizeArticle(raw, 0, { includeNarration: true });
