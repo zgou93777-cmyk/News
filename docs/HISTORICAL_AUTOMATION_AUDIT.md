@@ -49,6 +49,33 @@ backlog, verification backlog, indexed containers, ready rows, and published row
 It also reports missing years or metadata, release-guard violations, broken parent
 links, common failure messages, and the load-adjusted batch recommendation.
 
+## Production acceptance on 2026-07-26
+
+Release `5dc8540` was audited on the production host after the schema 8 deployment.
+The first hourly historical unit started at 13:41 CST and exited successfully. Its
+observable results were:
+
+- 400 private queue rows, all at `manual_review`, covering 17 represented years
+  from 1954 through 1983. Discovery remains incomplete and continues in bounded
+  hourly windows.
+- No failed rows, scheduled failure retries, missing source years, broken parent
+  links, stale ready assessments, release-guard violations, public release
+  violations, or public document mismatches.
+- Three immutable source PDF artifacts, 60 page-level OCR artifacts, and three
+  durable `OCR checkpoint: 20/N pages` records scheduled for retry. No public
+  document was created from an incomplete checkpoint.
+- An idle load average of 0.00 with 1,368 MiB available memory and 28 GiB available
+  disk. The audit recommended 100 non-OCR rows while idle. During OCR the normalized
+  load reached 1.015 and the controller reduced the recommendation to the minimum
+  batch of 5.
+- The API service and both timers remained active. The historical one-shot unit
+  reported `Result=success` and `ExecMainStatus=0`; its persistent timer scheduled
+  the next bounded run automatically.
+
+This accepts the queue, state machine, resource envelope, and durable checkpoint
+mechanism for the July 26 milestone. It does not accept PDF segmentation or release
+quality; those remain gated by the later rollout milestones.
+
 ## PDF implementation contract
 
 The PDF worker caches immutable source bytes by checksum, preserves page-level text
