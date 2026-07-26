@@ -15,6 +15,7 @@ const {
   runHistoricalQueue
 } = require('./historical-backfill');
 const { runHistoricalReview } = require('./historical-review');
+const { runHistoricalReviewExport } = require('./historical-review-export');
 const { runHistoricalPdfQueue } = require('./historical-pdf');
 const { runHistoricalVerificationQueue } = require('./historical-verification');
 const { runHistoricalEvidenceQueue } = require('./historical-evidence');
@@ -36,6 +37,7 @@ const VALUE_OPTIONS = new Map([
   ['--historical-source', 'historicalSource'], ['--historical-sources-file', 'historicalSourcesFile'],
   ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'], ['--min-items', 'minItems'],
   ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile'],
+  ['--historical-review-export', 'historicalReviewExport'],
   ['--historical-cache-dir', 'cacheDir'], ['--ocr-page-budget', 'ocrPageBudget'],
   ['--ocr-languages', 'ocrLanguages'], ['--ocr-dpi', 'ocrDpi'],
   ['--ocr-psm', 'ocrPsm'], ['--ocr-oem', 'ocrOem'], ['--ocr-page-concurrency', 'ocrPageConcurrency'],
@@ -65,6 +67,7 @@ const HELP = `Usage:
   node src/cli.js --historical-release [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-status
   node src/cli.js --historical-audit
+  node src/cli.js --historical-review-export <output-dir> [--max-items 100]
   node src/cli.js --historical-review <queue-id> --review-file <review.json> [--dry-run]
 
 Options:
@@ -90,6 +93,7 @@ Options:
   --adaptive-load          Recheck CPU and memory pressure between historical items
   --historical-status      Show private queue counts by stage
   --historical-audit       Audit recovery boundaries, integrity and current capacity
+  --historical-review-export DIR  Export checksum-verified review bundles without database writes
   --historical-review ID   Validate a structured human review; moves only to private ready state
   --review-file PATH       Review evidence, policy cycle, implementation, outcome and analysis JSON
   --approved-by ID         Responsible reviewer for cohort approval
@@ -224,6 +228,7 @@ function parseArguments(argv) {
     Boolean(options.historicalCohortAudit), Boolean(options.historicalCohortApprove),
     Boolean(options.historicalRelease), Boolean(options.historicalStatus),
     Boolean(options.historicalAudit),
+    Boolean(options.historicalReviewExport),
     Boolean(options.historicalReview)
   ].filter(Boolean).length;
   if (modes > 1) {
@@ -233,6 +238,9 @@ function parseArguments(argv) {
     throw new Error('--apply is only valid with --backfill-images, --reconcile-relevance or --reconcile-lineage');
   }
   if (options.apply && options.dryRun) throw new Error('--apply and --dry-run cannot be used together');
+  if (options.historicalReviewExport && options.dryRun) {
+    throw new Error('--dry-run is not valid with --historical-review-export');
+  }
   if (options.reconcileRelevance && !options.apply) options.dryRun = true;
   if (options.reconcileLineage && !options.apply) options.dryRun = true;
   if (options.backfillImages && !options.apply) options.dryRun = true;
@@ -269,6 +277,9 @@ async function main() {
   }
   const serverConfig = loadConfig();
   const dbPath = path.resolve(options.dbPath || serverConfig.dbPath);
+  if (options.historicalReviewExport && !fs.existsSync(dbPath)) {
+    throw new Error(`historical review export database was not found: ${dbPath}`);
+  }
   options.notificationConfig = serverConfig;
   options.frontendDir = serverConfig.frontendDir;
   options.cacheDir = path.resolve(options.cacheDir || serverConfig.historicalCacheDir);
@@ -277,6 +288,7 @@ async function main() {
   // Seed dry-runs use an isolated database because the seed operation is intentionally idempotent but write-based.
   const db = options.dryRun && options.backfillSeed
     ? openDatabase(':memory:')
+    : options.historicalReviewExport ? openDryRunDatabase(dbPath)
     : options.dryRun ? openDryRunDatabase(dbPath) : openDatabase(dbPath);
   try {
     const result = options.backfillSeed
@@ -305,6 +317,8 @@ async function main() {
         ? { status: 'succeeded', queue: historicalQueueStats(db) }
       : options.historicalAudit
         ? historicalQueueAudit(db)
+      : options.historicalReviewExport
+        ? runHistoricalReviewExport(db, options)
       : options.historicalReview
         ? runHistoricalReview(db, options)
       : options.reconcileRelevance

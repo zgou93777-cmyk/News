@@ -104,8 +104,19 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   assert.equal(cohortApproval.approvedBy, 'reviewer');
   assert.equal(parseArguments(['--historical-release', '--adaptive-load']).historicalRelease, true);
   assert.equal(parseArguments(['--historical-audit']).historicalAudit, true);
+  const reviewExport = parseArguments(['--historical-review-export', 'review-bundle', '--max-items', '25']);
+  assert.equal(reviewExport.historicalReviewExport, 'review-bundle');
+  assert.equal(reviewExport.maxItems, 25);
+  assert.throws(
+    () => parseArguments(['--historical-review-export', 'review-bundle', '--dry-run']),
+    /not valid/
+  );
   assert.throws(
     () => parseArguments(['--historical-audit', '--historical-status']),
+    /choose only one/
+  );
+  assert.throws(
+    () => parseArguments(['--historical-review-export', 'review-bundle', '--historical-audit']),
     /choose only one/
   );
   assert.throws(

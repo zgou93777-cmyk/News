@@ -88,6 +88,16 @@ An applied human review stores the complete normalized submission, source checks
 reviewer identity, review time, and linked immutable assessment. Repeating the same
 review is idempotent; changing or deleting a stored submission is rejected.
 
+Export a bounded, read-only review bundle before editing a review file:
+
+```bash
+node src/cli.js --historical-review-export /secure/review-bundles/cohort-1 --max-items 100
+```
+
+The output directory must be empty. A complete bundle contains `manifest.json`, one
+source transcript and review template per item, and checksum-verified parent PDF,
+OCR page, text, and segmentation artifacts for the selected page ranges.
+
 审校文件必须同时包含：官方 `.gov.cn` 原文及补充证据 URL、标题/机构/发文日期、政策生效与废止周期、实施和结果证据状态、逐字证据摘录、分析摘要、歧义、审校说明和审校人。会议或文件表态不能作为实施证据；“未找到结果证据”必须明确记录为 `not_found`，不能改写成已兑现。数据库触发器会拒绝把字段不完整的条目标记为 `ready` 或 `published`。
 
 当前国务院公报官方导航始于 1954 年，且未列出 1967—1979 年；1949—1953 年需要另行寻找中央人民政府时期官方档案。因此首页只显示实际通过核验的最早和最晚年份，不宣称已经完整覆盖 1949 至今。
