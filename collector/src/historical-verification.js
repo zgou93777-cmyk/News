@@ -340,7 +340,8 @@ function verifySourceMetadata(db, item) {
     if (missing.length) {
       db.prepare(`
         UPDATE historical_backfill_items SET
-          source_status = 'verified', last_error = ?, next_attempt_at = datetime('now', '+24 hours'),
+          source_status = 'verified', last_error = ?,
+          next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+24 hours'),
           attempts = attempts + 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
         WHERE id = ?
       `).run(`metadata evidence missing: ${missing.join(', ')}`, item.id);
@@ -614,7 +615,7 @@ function verifyLifecycle(db, item, options = {}) {
       UPDATE historical_backfill_items SET
         effective_at = coalesce(?, effective_at), repealed_at = coalesce(?, repealed_at),
         lifecycle_status = ?, stage = ?, policy_cycle_json = ?, last_error = ?,
-        next_attempt_at = ${complete ? 'NULL' : "datetime('now', '+12 hours')"},
+        next_attempt_at = ${complete ? 'NULL' : "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+12 hours')"},
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
     `).run(
@@ -649,7 +650,8 @@ function updateVerificationFailure(db, item, error) {
   const retryHours = Math.min(168, 2 ** Math.min(attempts, 7));
   db.prepare(`
     UPDATE historical_backfill_items SET
-      attempts = attempts + 1, last_error = ?, next_attempt_at = datetime('now', ?),
+      attempts = attempts + 1, last_error = ?,
+      next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now') WHERE id = ?
   `).run(String(error.message || error).slice(0, 1000), `+${retryHours} hours`, item.id);
 }

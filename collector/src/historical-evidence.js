@@ -274,7 +274,7 @@ function collectPolicyEvidence(db, item, options = {}) {
     db.prepare(`
       UPDATE historical_backfill_items SET
         implementation_status = ?, outcome_status = ?, implementation_json = ?, outcome_json = ?,
-        last_error = ?, next_attempt_at = ${complete ? 'NULL' : "datetime('now', '+12 hours')"},
+        last_error = ?, next_attempt_at = ${complete ? 'NULL' : "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+12 hours')"},
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
     `).run(
@@ -342,7 +342,8 @@ function updateEvidenceFailure(db, item, error) {
   const retryHours = Math.min(168, 2 ** Math.min(attempts, 7));
   db.prepare(`
     UPDATE historical_backfill_items SET attempts = attempts + 1, last_error = ?,
-      next_attempt_at = datetime('now', ?), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
   `).run(String(error.message || error).slice(0, 1000), `+${retryHours} hours`, item.id);
 }

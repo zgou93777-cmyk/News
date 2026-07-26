@@ -570,7 +570,7 @@ function updatePdfCheckpoint(db, item, message, retryHours = 1) {
   db.prepare(`
     UPDATE historical_backfill_items SET
       stage = 'manual_review', attempts = attempts + 1, last_error = ?,
-      next_attempt_at = datetime('now', ?),
+      next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
   `).run(message.slice(0, 1000), `+${retryHours} hours`, item.id);

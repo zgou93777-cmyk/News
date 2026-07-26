@@ -44,6 +44,10 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
         DROP TABLE historical_artifacts;
         DROP TABLE historical_source_scans;
         UPDATE schema_meta SET value = '3' WHERE key = 'schema_version';
+        INSERT INTO historical_backfill_items (
+          source_url, source_name, item_kind, source_year, title, stage, next_attempt_at
+        ) VALUES ('https://www.gov.cn/gongbao/retry-format.htm', 'Official Gazette',
+          'document', 1954, 'legacy retry', 'failed', '2026-07-26 11:00:00');
         CREATE TRIGGER historical_backfill_ready_update_guard
         BEFORE UPDATE ON historical_backfill_items
         WHEN NEW.stage IN ('ready', 'published')
@@ -58,7 +62,15 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
 
     const upgraded = openDatabase(filename);
     try {
-      assert.equal(getSchemaVersion(upgraded), '10');
+      assert.equal(getSchemaVersion(upgraded), '11');
+      const retry = upgraded.prepare(`
+        SELECT next_attempt_at,
+          next_attempt_at > '2026-07-26T10:00:00.000Z' AS remains_deferred
+        FROM historical_backfill_items
+        WHERE source_url = 'https://www.gov.cn/gongbao/retry-format.htm'
+      `).get();
+      assert.equal(retry.next_attempt_at, '2026-07-26T11:00:00.000Z');
+      assert.equal(retry.remains_deferred, 1);
       const tables = new Set(upgraded.prepare(`
         SELECT name FROM sqlite_schema WHERE type = 'table'
       `).all().map((row) => row.name));

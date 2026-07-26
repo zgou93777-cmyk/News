@@ -287,7 +287,8 @@ test('historical audit exposes recoverable work, blocked stages and integrity ri
     db.prepare(`UPDATE historical_backfill_items SET stage = 'failed', attempts = 2, last_error = 'timeout' WHERE id = ?`).run(ids[1]);
     db.prepare(`
       UPDATE historical_backfill_items
-      SET stage = 'failed', attempts = 4, last_error = 'timeout', next_attempt_at = datetime('now', '+1 day')
+      SET stage = 'failed', attempts = 4, last_error = 'timeout',
+        next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 day')
       WHERE id = ?
     `).run(ids[2]);
     db.prepare(`UPDATE historical_backfill_items SET stage = 'manual_review' WHERE id = ?`).run(ids[3]);

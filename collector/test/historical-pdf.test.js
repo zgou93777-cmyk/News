@@ -158,7 +158,11 @@ test('legacy v1 PDF candidates are requeued, rechecked and quarantined when v2 r
     assert.equal(child.source_status, 'rejected');
     assert.equal(child.metadata_status, 'rejected');
     assert.match(child.last_error, /segmentation rejected/);
-    db.prepare("UPDATE historical_backfill_items SET next_attempt_at = datetime('now', '+1 day') WHERE id = ?").run(earlierId);
+    db.prepare(`
+      UPDATE historical_backfill_items
+      SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 day')
+      WHERE id = ?
+    `).run(earlierId);
     const repeated = await runHistoricalPdfQueue(db, { cacheDir, maxItems: 1, delayMs: 0 }, {
       loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
     });
@@ -397,7 +401,8 @@ test('stale OCR artifacts are requeued once until the current profile starts', (
     });
     const itemId = Number(db.prepare('SELECT id FROM historical_backfill_items').get().id);
     db.prepare(`
-      UPDATE historical_backfill_items SET stage = 'manual_review', next_attempt_at = datetime('now', '+1 day')
+      UPDATE historical_backfill_items SET stage = 'manual_review',
+        next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 day')
       WHERE id = ?
     `).run(itemId);
     db.prepare(`
@@ -419,7 +424,11 @@ test('stale OCR artifacts are requeued once until the current profile starts', (
         page_start, page_end, engine, metadata_json
       ) VALUES (?, 'ocr_page', 'pages/current/page-0001.txt', ?, 10, 1, 1, 'tesseract', ?)
     `).run(itemId, 'e'.repeat(64), JSON.stringify({ ocrProfile: profile }));
-    db.prepare("UPDATE historical_backfill_items SET next_attempt_at = datetime('now', '+1 day') WHERE id = ?").run(itemId);
+    db.prepare(`
+      UPDATE historical_backfill_items
+      SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+1 day')
+      WHERE id = ?
+    `).run(itemId);
     assert.equal(queueStaleOcrProfiles(db, profile.id), 0);
   } finally {
     db.close();
@@ -438,8 +447,12 @@ test('PDF failures remain private and use increasing retry delays', async () => 
       sourceYear: 1956
     });
     db.prepare("UPDATE historical_backfill_items SET stage = 'manual_review'").run();
+    let fetchAttempts = 0;
     const dependencies = {
-      fetchPdf: async () => { throw new Error('temporary network failure'); },
+      fetchPdf: async () => {
+        fetchAttempts += 1;
+        throw new Error('temporary network failure');
+      },
       loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
     };
 
@@ -448,8 +461,18 @@ test('PDF failures remain private and use increasing retry delays', async () => 
     const firstRetry = db.prepare('SELECT * FROM historical_backfill_items').get();
     assert.equal(firstRetry.attempts, 1);
     assert.match(firstRetry.last_error, /temporary network failure/);
-    assert.ok(firstRetry.next_attempt_at);
+    assert.match(firstRetry.next_attempt_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    assert.equal(db.prepare(`
+      SELECT next_attempt_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now') AS is_future
+      FROM historical_backfill_items
+    `).get().is_future, 1);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
+
+    const deferred = await runHistoricalPdfQueue(db, { cacheDir, maxItems: 1, delayMs: 0 }, dependencies);
+    assert.equal(deferred.status, 'succeeded');
+    assert.equal(deferred.selected, 0);
+    assert.equal(deferred.processed, 0);
+    assert.equal(fetchAttempts, 1);
 
     db.prepare('UPDATE historical_backfill_items SET next_attempt_at = NULL').run();
     const second = await runHistoricalPdfQueue(db, { cacheDir, maxItems: 1, delayMs: 0 }, dependencies);
@@ -457,6 +480,7 @@ test('PDF failures remain private and use increasing retry delays', async () => 
     const secondRetry = db.prepare('SELECT * FROM historical_backfill_items').get();
     assert.equal(secondRetry.attempts, 2);
     assert.ok(secondRetry.next_attempt_at > firstRetry.next_attempt_at);
+    assert.equal(fetchAttempts, 2);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
   } finally {
     db.close();

@@ -277,7 +277,7 @@ function updateQueueFailure(db, item, error) {
   db.prepare(`
     UPDATE historical_backfill_items SET
       stage = 'failed', attempts = ?, last_error = ?,
-      next_attempt_at = datetime('now', ?),
+      next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
   `).run(attempts, String(error.message || error).slice(0, 1000), `+${retryHours} hours`, item.id);

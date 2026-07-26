@@ -394,7 +394,7 @@ function assessHistoricalPolicy(db, item, options = {}) {
       UPDATE historical_backfill_items SET
         stage = ?, analysis_status = ?, analysis_json = ?, evidence_urls_json = ?,
         review_notes = ?, reviewed_by = ?, reviewed_at = ?, last_error = ?,
-        next_attempt_at = ${releaseEligible ? 'NULL' : "datetime('now', '+24 hours')"},
+        next_attempt_at = ${releaseEligible ? 'NULL' : "strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '+24 hours')"},
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
     `).run(
@@ -432,7 +432,8 @@ function updateAnalysisFailure(db, item, error) {
   const retryHours = Math.min(168, 2 ** Math.min(item.attempts + 1, 7));
   db.prepare(`
     UPDATE historical_backfill_items SET attempts = attempts + 1, last_error = ?,
-      next_attempt_at = datetime('now', ?), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
   `).run(String(error.message || error).slice(0, 1000), `+${retryHours} hours`, item.id);
 }

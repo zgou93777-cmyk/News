@@ -437,7 +437,8 @@ function updateReleaseFailure(db, item, error) {
   const retryHours = Math.min(168, 2 ** Math.min(item.attempts + 1, 7));
   db.prepare(`
     UPDATE historical_backfill_items SET attempts = attempts + 1, last_error = ?,
-      next_attempt_at = datetime('now', ?), updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+      next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
   `).run(String(error.message || error).slice(0, 1000), `+${retryHours} hours`, item.id);
 }

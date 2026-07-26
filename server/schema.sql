@@ -786,5 +786,12 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '10')
+-- SQLite datetime() uses a space separator, which sorts before the ISO UTC
+-- timestamps used by queue readers. Normalize legacy retry values idempotently.
+UPDATE historical_backfill_items
+SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at)
+WHERE next_attempt_at GLOB '????-??-?? ??:??:??*'
+  AND strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at) IS NOT NULL;
+
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '11')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;
