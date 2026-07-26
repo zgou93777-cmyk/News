@@ -299,6 +299,10 @@ async function routeApi(req, res, url, context) {
         count(*) FILTER (WHERE item.stage = 'ready') AS ready,
         count(*) FILTER (WHERE item.stage = 'published') AS published,
         count(*) FILTER (
+          WHERE item.stage = 'lifecycle_verified' AND item.analysis_status = 'verified'
+            AND CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER) > 0
+        ) AS framework_pending,
+        count(*) FILTER (
           WHERE item.stage IN ('ready', 'published') AND NOT EXISTS (
             SELECT 1 FROM historical_analysis_versions assessment
             WHERE assessment.id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
@@ -329,6 +333,17 @@ async function routeApi(req, res, url, context) {
               )
           )
         ) AS assessment_violations,
+        count(*) FILTER (
+          WHERE item.stage IN ('ready', 'published') AND NOT EXISTS (
+            SELECT 1 FROM historical_analysis_frameworks framework
+            WHERE framework.id = CAST(json_extract(item.analysis_json, '$.frameworkVersionId') AS INTEGER)
+              AND framework.assessment_version_id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
+              AND framework.version = CAST(json_extract(item.analysis_json, '$.frameworkVersion') AS INTEGER)
+              AND framework.source_checksum = item.checksum
+              AND json_extract(framework.framework_json, '$.ready') IS 1
+              AND json_array_length(framework.evidence_json) > 0
+          )
+        ) AS framework_violations,
         count(*) FILTER (
           WHERE item.stage IN ('ready', 'published') AND item.source_type = 'pdf'
             AND NOT EXISTS (
@@ -389,6 +404,7 @@ async function routeApi(req, res, url, context) {
         byStage: Object.fromEntries(historicalRows.map((row) => [row.stage, Number(row.count)])),
         ready: Number(historicalIntegrity.ready),
         published: Number(historicalIntegrity.published),
+        frameworkPending: Number(historicalIntegrity.framework_pending),
         rollout: {
           mode: historicalRollout.mode,
           activeCohortId: historicalRollout.active_cohort_id == null
@@ -398,6 +414,7 @@ async function routeApi(req, res, url, context) {
           cohortItems: Number(historicalRollout.cohort_items || 0)
         },
         integrityOk: Number(historicalIntegrity.assessment_violations) === 0
+          && Number(historicalIntegrity.framework_violations) === 0
           && Number(historicalIntegrity.segmentation_violations) === 0
           && Number(historicalIntegrity.evidence_source_violations) === 0
           && Number(historicalIntegrity.release_violations) === 0
