@@ -21,6 +21,9 @@ const execFileAsync = promisify(execFile);
 const MAX_PDF_BYTES = 80 * 1024 * 1024;
 const MAX_PDF_PAGES = 300;
 const TITLE_ENDINGS = /(?:决定|决议|命令|通知|通告|公告|条例|规定|办法|意见|批复|报告|方案|细则|规则|函)(?:[（(][^）)]{1,40}[）)])?$/u;
+const NOMINAL_TITLE_ENDINGS = /(?:条例|规定|办法|细则|规则|章程|纲要|规划)(?:[（(][^）)]{1,40}[）)])?$/u;
+const ACTION_TITLE_ENDINGS = /(?:决定|决议|通知|通告|公告|意见|批复|报告|方案|函)(?:[（(][^）)]{1,40}[）)])?$/u;
+const DOCUMENT_ANCHOR = /(?:(?:19|20)\d{2}\s*年|[〇零○一二三四五六七八九十]{4}\s*年|〔\s*(?:19|20)\d{2}\s*〕|(?:会议|大会).{0,20}(?:通过|批准)|(?:国务院|政务院|人民代表大会|[\p{Script=Han}]{2,16}(?:部|委员会)).{0,20}(?:制定|批准|通过|公布|发布))/u;
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -242,6 +245,7 @@ async function pdfPageCount(pdfFilename, options = {}) {
 
 async function ocrPdfPages(pdfFilename, sourceChecksum, options = {}) {
   const cacheDir = path.resolve(options.cacheDir);
+  const runCommand = options.commandImpl || command;
   const pageDir = path.join(cacheDir, 'pages', sourceChecksum);
   const temporaryDir = path.join(cacheDir, 'tmp');
   await fs.promises.mkdir(pageDir, { recursive: true });
@@ -258,11 +262,11 @@ async function ocrPdfPages(pdfFilename, sourceChecksum, options = {}) {
       const prefix = path.join(temporaryDir, `ocr-${sourceChecksum.slice(0, 12)}-${page}-${crypto.randomUUID()}`);
       const imageFilename = `${prefix}.png`;
       try {
-        await command(options.pdftoppmCommand || 'pdftoppm', [
+        await runCommand(options.pdftoppmCommand || 'pdftoppm', [
           '-f', String(page), '-l', String(page), '-r', String(options.dpi || 180),
           '-png', '-singlefile', pdfFilename, prefix
         ], options);
-        const result = await command(options.tesseractCommand || 'tesseract', [
+        const result = await runCommand(options.tesseractCommand || 'tesseract', [
           imageFilename, 'stdout', '-l', options.ocrLanguages || 'chi_sim+eng', '--psm', '6'
         ], options);
         await atomicCacheWrite(filename, Buffer.from(normalizePdfText(result.stdout), 'utf8'));
@@ -301,7 +305,30 @@ function isCandidateTitle(value) {
   return TITLE_ENDINGS.test(title) || /^中华人民共和国(?:国务院|主席)令/u.test(title);
 }
 
-function splitPdfIssueText(rawText, options = {}) {
+function candidateTitleReviewReason(value) {
+  const title = cleanCandidateTitle(value);
+  if (!isCandidateTitle(title)) return 'not-a-policy-heading';
+  if (/^[^\p{Script=Han}A-Za-z0-9]/u.test(title)) return 'unexpected-leading-character';
+  const meaningful = title.replace(/[\p{Script=Han}A-Za-z0-9]/gu, '');
+  if (meaningful.length > Math.max(4, Math.floor(title.length * 0.2))) return 'excessive-non-title-characters';
+  if (NOMINAL_TITLE_ENDINGS.test(title)) return '';
+  if (/^中华人民共和国(?:国务院|主席)令/u.test(title)) return '';
+  if (/(?:工作报告|政府公告)$/u.test(title)) return '';
+  if (ACTION_TITLE_ENDINGS.test(title)
+    && (/(?:关于).{2,}/u.test(title) || /(?:印发|转发|发布|公布|颁布|修订|废止).{2,}/u.test(title))) {
+    return '';
+  }
+  return 'missing-policy-title-structure';
+}
+
+function hasDocumentAnchor(lines, index) {
+  const page = lines[index].page;
+  return lines.slice(index + 1, index + 7)
+    .filter((line) => line.page <= page + 1)
+    .some((line) => DOCUMENT_ANCHOR.test(line.text));
+}
+
+function segmentPdfIssueText(rawText, options = {}) {
   const pages = normalizePdfText(rawText).split('\f');
   const lines = [];
   for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
@@ -312,17 +339,23 @@ function splitPdfIssueText(rawText, options = {}) {
   }
   const starts = [];
   for (let index = 0; index < lines.length; index += 1) {
-    if (isCandidateTitle(lines[index].text)) starts.push(index);
+    if (isCandidateTitle(lines[index].text) && hasDocumentAnchor(lines, index)) starts.push(index);
   }
   if (!starts.length && options.itemKind === 'document' && lines.length) starts.push(0);
 
   const candidates = [];
+  const rejectedHeadings = [];
   for (let index = 0; index < starts.length; index += 1) {
     const start = starts[index];
     const end = index + 1 < starts.length ? starts[index + 1] : lines.length;
     const title = isCandidateTitle(lines[start].text)
       ? cleanCandidateTitle(lines[start].text)
       : cleanCandidateTitle(options.fallbackTitle || lines[start].text);
+    const reviewReason = candidateTitleReviewReason(title);
+    if (reviewReason) {
+      rejectedHeadings.push({ title, page: lines[start].page, reason: reviewReason });
+      continue;
+    }
     const contentText = normalizePdfText(lines.slice(start, end).map((line) => line.text).join('\n'));
     if (!title || contentText.replace(/\s+/g, '').length < (options.minimumLength || 120)) continue;
     candidates.push({
@@ -340,7 +373,26 @@ function splitPdfIssueText(rawText, options = {}) {
     const previous = byTitle.get(key);
     if (!previous || candidate.contentText.length > previous.contentText.length) byTitle.set(key, candidate);
   }
-  return [...byTitle.values()].sort((left, right) => left.pageStart - right.pageStart || left.title.localeCompare(right.title));
+  const uniqueCandidates = [...byTitle.values()]
+    .sort((left, right) => left.pageStart - right.pageStart || left.title.localeCompare(right.title));
+  const reviewReasons = [];
+  if (rejectedHeadings.length) reviewReasons.push(`untrusted-headings:${rejectedHeadings.length}`);
+  if (!uniqueCandidates.length) reviewReasons.push('no-trusted-policy-candidates');
+  if (options.itemKind !== 'document' && uniqueCandidates.length) {
+    const maximumLeadPages = Math.max(4, Math.ceil(pages.length * 0.25));
+    if (uniqueCandidates[0].pageStart > maximumLeadPages) {
+      reviewReasons.push(`unsegmented-leading-pages:${uniqueCandidates[0].pageStart - 1}`);
+    }
+    const minimumCandidates = Math.max(1, Math.ceil(pages.length / 30));
+    if (uniqueCandidates.length < minimumCandidates) {
+      reviewReasons.push(`insufficient-heading-density:${uniqueCandidates.length}/${minimumCandidates}`);
+    }
+  }
+  return { candidates: uniqueCandidates, rejectedHeadings, reviewReasons, pageCount: pages.length };
+}
+
+function splitPdfIssueText(rawText, options = {}) {
+  return segmentPdfIssueText(rawText, options).candidates;
 }
 
 function insertPdfCandidates(db, item, candidates) {
@@ -464,22 +516,23 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
     metadata: { sourceChecksum: source.checksum }
   });
 
-  const candidates = splitPdfIssueText(text, {
+  const segmentationResult = segmentPdfIssueText(text, {
     itemKind: item.item_kind,
     fallbackTitle: item.title,
     minimumLength: options.minimumCandidateLength
   });
-  if (!candidates.length) {
-    updatePdfCheckpoint(db, item, 'automatic segmentation found no policy candidates', 24);
-    return { id: item.id, action: 'segmentation_review', candidates: 0, remoteFetched: source.remoteFetched };
-  }
-
-  const segmentation = Buffer.from(JSON.stringify(candidates.map((candidate) => ({
-    title: candidate.title,
-    pageStart: candidate.pageStart,
-    pageEnd: candidate.pageEnd,
-    checksum: candidate.checksum
-  })), null, 2));
+  const candidates = segmentationResult.candidates;
+  const segmentation = Buffer.from(JSON.stringify({
+    status: segmentationResult.reviewReasons.length ? 'review_required' : 'accepted',
+    candidates: candidates.map((candidate) => ({
+      title: candidate.title,
+      pageStart: candidate.pageStart,
+      pageEnd: candidate.pageEnd,
+      checksum: candidate.checksum
+    })),
+    rejectedHeadings: segmentationResult.rejectedHeadings,
+    reviewReasons: segmentationResult.reviewReasons
+  }, null, 2));
   const segmentationChecksum = sha256(segmentation);
   const segmentationFilename = path.join(cacheDir, 'segments', `${source.checksum}.${segmentationChecksum.slice(0, 16)}.json`);
   await fs.promises.mkdir(path.dirname(segmentationFilename), { recursive: true });
@@ -491,9 +544,25 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
     byteSize: segmentation.length,
     pageStart: 1,
     pageEnd: pageCount,
-    engine: 'policy-heading-v1',
-    metadata: { candidates: candidates.length, textChecksum }
+    engine: 'policy-heading-v2',
+    metadata: {
+      status: segmentationResult.reviewReasons.length ? 'review_required' : 'accepted',
+      candidates: candidates.length,
+      rejectedHeadings: segmentationResult.rejectedHeadings.length,
+      reviewReasons: segmentationResult.reviewReasons,
+      textChecksum
+    }
   });
+  if (segmentationResult.reviewReasons.length) {
+    updatePdfCheckpoint(db, item, `automatic segmentation review: ${segmentationResult.reviewReasons.join(', ')}`, 24);
+    return {
+      id: item.id,
+      action: 'segmentation_review',
+      candidates: candidates.length,
+      rejectedHeadings: segmentationResult.rejectedHeadings.length,
+      remoteFetched: source.remoteFetched
+    };
+  }
   const created = insertPdfCandidates(db, item, candidates);
   return {
     id: item.id,
@@ -576,5 +645,6 @@ module.exports = {
   ocrPdfPages,
   processPdfItem,
   runHistoricalPdfQueue,
+  segmentPdfIssueText,
   splitPdfIssueText
 };
