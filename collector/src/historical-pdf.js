@@ -20,6 +20,11 @@ const {
 const execFileAsync = promisify(execFile);
 const MAX_PDF_BYTES = 80 * 1024 * 1024;
 const MAX_PDF_PAGES = 300;
+const OCR_PROFILE_VERSION = 'gazette-ocr-v2';
+const DEFAULT_OCR_LANGUAGES = 'chi_sim+chi_tra+eng';
+const DEFAULT_OCR_DPI = 300;
+const DEFAULT_OCR_PSM = 3;
+const DEFAULT_OCR_OEM = 1;
 const TITLE_ENDINGS = /(?:决定|决议|命令|通知|通告|公告|条例|规定|办法|意见|批复|报告|方案|细则|规则|函)(?:[（(][^）)]{1,40}[）)])?$/u;
 const NOMINAL_TITLE_ENDINGS = /(?:条例|规定|办法|细则|规则|章程|纲要|规划)(?:[（(][^）)]{1,40}[）)])?$/u;
 const ACTION_TITLE_ENDINGS = /(?:决定|决议|通知|通告|公告|意见|批复|报告|方案|函)(?:[（(][^）)]{1,40}[）)])?$/u;
@@ -27,6 +32,23 @@ const DOCUMENT_ANCHOR = /(?:(?:19|20)\d{2}\s*年|[〇零○一二三四五六七
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function historicalOcrProfile(options = {}) {
+  const languages = String(
+    options.ocrLanguages || process.env.HISTORICAL_OCR_LANGUAGES || DEFAULT_OCR_LANGUAGES
+  ).trim();
+  if (!/^[a-z0-9_]+(?:\+[a-z0-9_]+)*$/i.test(languages)) {
+    throw new Error('historical OCR languages must be plus-separated Tesseract identifiers');
+  }
+  const dpi = Number(options.dpi ?? options.ocrDpi ?? DEFAULT_OCR_DPI);
+  const psm = Number(options.psm ?? options.ocrPsm ?? DEFAULT_OCR_PSM);
+  const oem = Number(options.oem ?? options.ocrOem ?? DEFAULT_OCR_OEM);
+  if (!Number.isSafeInteger(dpi) || dpi < 150 || dpi > 600) throw new Error('historical OCR DPI must be 150 to 600');
+  if (!Number.isSafeInteger(psm) || psm < 0 || psm > 13) throw new Error('historical OCR PSM must be 0 to 13');
+  if (!Number.isSafeInteger(oem) || oem < 0 || oem > 3) throw new Error('historical OCR OEM must be 0 to 3');
+  const settings = { version: OCR_PROFILE_VERSION, languages, dpi, psm, oem };
+  return { ...settings, id: sha256(JSON.stringify(settings)).slice(0, 16) };
 }
 
 function isOfficialGovernmentUrl(value) {
@@ -246,7 +268,8 @@ async function pdfPageCount(pdfFilename, options = {}) {
 async function ocrPdfPages(pdfFilename, sourceChecksum, options = {}) {
   const cacheDir = path.resolve(options.cacheDir);
   const runCommand = options.commandImpl || command;
-  const pageDir = path.join(cacheDir, 'pages', sourceChecksum);
+  const profile = historicalOcrProfile(options);
+  const pageDir = path.join(cacheDir, 'pages', sourceChecksum, profile.id);
   const temporaryDir = path.join(cacheDir, 'tmp');
   await fs.promises.mkdir(pageDir, { recursive: true });
   await fs.promises.mkdir(temporaryDir, { recursive: true });
@@ -263,11 +286,12 @@ async function ocrPdfPages(pdfFilename, sourceChecksum, options = {}) {
       const imageFilename = `${prefix}.png`;
       try {
         await runCommand(options.pdftoppmCommand || 'pdftoppm', [
-          '-f', String(page), '-l', String(page), '-r', String(options.dpi || 180),
+          '-f', String(page), '-l', String(page), '-r', String(profile.dpi),
           '-png', '-singlefile', pdfFilename, prefix
         ], options);
         const result = await runCommand(options.tesseractCommand || 'tesseract', [
-          imageFilename, 'stdout', '-l', options.ocrLanguages || 'chi_sim+eng', '--psm', '6'
+          imageFilename, 'stdout', '-l', profile.languages,
+          '--oem', String(profile.oem), '--psm', String(profile.psm)
         ], options);
         await atomicCacheWrite(filename, Buffer.from(normalizePdfText(result.stdout), 'utf8'));
         processed += 1;
@@ -286,7 +310,8 @@ async function ocrPdfPages(pdfFilename, sourceChecksum, options = {}) {
     pageCount,
     pagesProcessed: processed,
     pages,
-    text: pages.length === pageCount ? normalizePdfText(pages.map((entry) => entry.text).join('\f')) : ''
+    text: pages.length === pageCount ? normalizePdfText(pages.map((entry) => entry.text).join('\f')) : '',
+    profile
   };
 }
 
@@ -444,12 +469,31 @@ function queueLegacyPdfSegmentations(db) {
   `).run().changes);
 }
 
+function queueStaleOcrProfiles(db, profileId) {
+  return Number(db.prepare(`
+    UPDATE historical_backfill_items SET
+      stage = 'manual_review', last_error = 'historical OCR profile upgrade requires reprocessing',
+      next_attempt_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE source_type = 'pdf' AND item_kind = 'issue' AND stage = 'manual_review'
+      AND EXISTS (
+        SELECT 1 FROM historical_artifacts artifact
+        WHERE artifact.item_id = historical_backfill_items.id AND artifact.artifact_type = 'ocr_page'
+          AND coalesce(json_extract(artifact.metadata_json, '$.ocrProfile.id'), '') <> ?
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM historical_artifacts artifact
+        WHERE artifact.item_id = historical_backfill_items.id AND artifact.artifact_type = 'ocr_page'
+          AND json_extract(artifact.metadata_json, '$.ocrProfile.id') = ?
+      )
+  `).run(profileId, profileId).changes);
+}
+
 function insertPdfCandidates(db, item, candidates) {
   const insert = db.prepare(`
     INSERT INTO historical_backfill_items (
       parent_id, source_url, source_name, source_type, item_kind,
-      source_year, issue_label, title, content_text, checksum, stage, fetched_at
-    ) VALUES (?, ?, ?, 'pdf', 'document', ?, ?, ?, ?, ?, 'needs_review', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+      source_year, issue_label, title, content_text, checksum, stage, last_error, fetched_at
+    ) VALUES (?, ?, ?, 'pdf', 'document', ?, ?, ?, ?, ?, 'manual_review', ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     ON CONFLICT(source_url) DO UPDATE SET
       parent_id = excluded.parent_id,
       source_name = excluded.source_name,
@@ -460,14 +504,14 @@ function insertPdfCandidates(db, item, candidates) {
       title = excluded.title,
       content_text = excluded.content_text,
       checksum = excluded.checksum,
-      stage = 'needs_review',
+      stage = 'manual_review',
       source_status = 'pending',
       metadata_status = 'pending',
       lifecycle_status = 'pending',
       implementation_status = 'pending',
       outcome_status = 'pending',
       analysis_status = 'pending',
-      last_error = '',
+      last_error = excluded.last_error,
       next_attempt_at = NULL,
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE historical_backfill_items.document_id IS NULL
@@ -487,7 +531,8 @@ function insertPdfCandidates(db, item, candidates) {
         item.title || item.issue_label,
         candidate.title,
         candidate.contentText,
-        candidate.checksum
+        candidate.checksum,
+        `OCR transcription requires comparison with official PDF pages ${candidate.pageStart}-${candidate.pageEnd}`
       );
       created += result.changes;
     }
@@ -534,6 +579,7 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
   let extractionEngine = 'pdftotext';
   let pageCount = Math.max(1, embeddedText.split('\f').length);
   let text = embeddedText;
+  let ocrProfile = null;
 
   if (!isUsableExtractedText(embeddedText)) {
     extractionType = 'ocr_text';
@@ -541,9 +587,13 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
     const ocr = await (dependencies.ocrPdf || ocrPdfPages)(source.filename, source.checksum, {
       cacheDir,
       pageBudget: options.ocrPageBudget || 20,
-      ocrLanguages: options.ocrLanguages || process.env.HISTORICAL_OCR_LANGUAGES || 'chi_sim+eng',
+      ocrLanguages: options.ocrLanguages,
+      ocrDpi: options.ocrDpi,
+      ocrPsm: options.ocrPsm,
+      ocrOem: options.ocrOem,
       timeoutMs: options.toolTimeoutMs
     });
+    ocrProfile = ocr.profile || historicalOcrProfile(options);
     pageCount = ocr.pageCount;
     for (const page of ocr.pages || []) {
       recordArtifact(db, item.id, {
@@ -554,7 +604,8 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
         pageStart: page.page,
         pageEnd: page.page,
         engine: 'tesseract',
-        metadata: { languages: options.ocrLanguages || process.env.HISTORICAL_OCR_LANGUAGES || 'chi_sim+eng' }
+        engineVersion: ocrProfile.version,
+        metadata: { ocrProfile }
       });
     }
     if (!ocr.complete) {
@@ -572,7 +623,8 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
 
   if (!isUsableExtractedText(text)) throw new Error('PDF text extraction produced insufficient Chinese text');
   const textChecksum = sha256(text);
-  const textFilename = path.join(cacheDir, 'text', `${source.checksum}.${extractionType === 'ocr_text' ? 'ocr' : 'embedded'}.txt`);
+  const textSuffix = extractionType === 'ocr_text' ? `${ocrProfile.id}.ocr` : 'embedded';
+  const textFilename = path.join(cacheDir, 'text', `${source.checksum}.${textSuffix}.txt`);
   await fs.promises.mkdir(path.dirname(textFilename), { recursive: true });
   await atomicCacheWrite(textFilename, Buffer.from(text, 'utf8'));
   recordArtifact(db, item.id, {
@@ -583,7 +635,8 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
     pageStart: 1,
     pageEnd: pageCount,
     engine: extractionEngine,
-    metadata: { sourceChecksum: source.checksum }
+    engineVersion: ocrProfile?.version || '',
+    metadata: { sourceChecksum: source.checksum, ...(ocrProfile ? { ocrProfile } : {}) }
   });
 
   const segmentationResult = segmentPdfIssueText(text, {
@@ -620,7 +673,8 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
       candidates: candidates.length,
       rejectedHeadings: segmentationResult.rejectedHeadings.length,
       reviewReasons: segmentationResult.reviewReasons,
-      textChecksum
+      textChecksum,
+      ...(ocrProfile ? { ocrProfile } : {})
     }
   });
   if (segmentationResult.reviewReasons.length) {
@@ -669,6 +723,8 @@ function pdfQueueItems(db, maximum) {
 async function runHistoricalPdfQueue(db, options = {}, dependencies = {}) {
   if (!options.cacheDir) throw new Error('historical PDF cache directory is required');
   const legacyQueued = queueLegacyPdfSegmentations(db);
+  const ocrProfile = historicalOcrProfile(options);
+  const staleOcrQueued = queueStaleOcrProfiles(db, ocrProfile.id);
   const maximum = options.maxItems || 5;
   const minimum = Math.min(maximum, options.minItems || 1);
   const delayMs = options.delayMs ?? 5000;
@@ -681,6 +737,8 @@ async function runHistoricalPdfQueue(db, options = {}, dependencies = {}) {
   const result = {
     status: 'succeeded',
     legacyQueued,
+    staleOcrQueued,
+    ocrProfile,
     selected: items.length,
     planned: Math.min(items.length, initialCapacity),
     processed: 0,
@@ -728,6 +786,8 @@ module.exports = {
   ocrPdfPages,
   processPdfItem,
   queueLegacyPdfSegmentations,
+  queueStaleOcrProfiles,
+  historicalOcrProfile,
   runHistoricalPdfQueue,
   segmentPdfIssueText,
   splitPdfIssueText

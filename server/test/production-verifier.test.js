@@ -58,8 +58,9 @@ test('production verifier rejects accepted evidence whose source is not currentl
 });
 
 test('OCR language parser requires exact language identifiers', () => {
-  const languages = tesseractLanguages('List of available languages (2):\nchi_sim\neng\n');
+  const languages = tesseractLanguages('List of available languages (3):\nchi_sim\nchi_tra\neng\n');
   assert.equal(languages.has('chi_sim'), true);
+  assert.equal(languages.has('chi_tra'), true);
   assert.equal(languages.has('eng'), true);
   assert.equal(languages.has('chi'), false);
 });

@@ -46,7 +46,7 @@ node src/cli.js --reconcile-relevance --apply
 
 ## 1949 至今的历史回填
 
-历史回填与日常采集隔离。发现和提取不会写入公开 `documents` 表，也不会发送通知；自动处理的 HTML 最多进入 `needs_review`。公报 PDF 先进入 `manual_review`，再由独立任务执行缓存、文本提取、逐页 OCR 和文章拆分；拆出的候选文章仍只进入私有 `needs_review`。
+历史回填与日常采集隔离。发现和提取不会写入公开 `documents` 表，也不会发送通知；自动处理的 HTML 最多进入 `needs_review`。公报 PDF 先进入 `manual_review`，再由独立任务执行缓存、简繁中文逐页 OCR 和文章拆分；OCR 只负责发现候选，拆出的文章继续停留在私有 `manual_review`，必须对照官方 PDF 页完成结构化审核。
 
 ```bash
 # 读取国务院公报官方导航，记录真实缺口并建立私有队列
@@ -56,7 +56,7 @@ node src/cli.js --historical-discover --from-year 1949 --max-items 100
 node src/cli.js --historical-process --adaptive-load --min-items 5 --max-items 100 --delay-ms 5000
 
 # 处理私有 PDF 队列；优先内嵌文本，必要时每份最多新增 OCR 20 页并保存断点
-node src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --delay-ms 5000
+node src/cli.js --historical-pdf-process --adaptive-load --min-items 1 --max-items 5 --ocr-page-budget 20 --ocr-languages chi_sim+chi_tra+eng --ocr-dpi 300 --ocr-psm 3 --ocr-oem 1 --delay-ms 5000
 
 # 核验机关、文号、发布日期、施行日期以及后续官方废止/替代关系
 node src/cli.js --historical-verify --adaptive-load --min-items 5 --max-items 100

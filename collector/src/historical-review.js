@@ -63,7 +63,7 @@ function evidenceArray(value, name, status) {
 
 function validateHistoricalReview(item, input) {
   if (!item || item.item_kind !== 'document') throw new Error('historical review item must be an extracted document');
-  if (!['needs_review', 'source_verified', 'lifecycle_verified', 'ready'].includes(item.stage)) {
+  if (!['manual_review', 'needs_review', 'source_verified', 'lifecycle_verified', 'ready'].includes(item.stage)) {
     throw new Error(`historical item stage ${item.stage} cannot be reviewed`);
   }
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('review file must contain an object');

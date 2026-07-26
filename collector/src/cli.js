@@ -37,6 +37,8 @@ const VALUE_OPTIONS = new Map([
   ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'], ['--min-items', 'minItems'],
   ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile'],
   ['--historical-cache-dir', 'cacheDir'], ['--ocr-page-budget', 'ocrPageBudget'],
+  ['--ocr-languages', 'ocrLanguages'], ['--ocr-dpi', 'ocrDpi'],
+  ['--ocr-psm', 'ocrPsm'], ['--ocr-oem', 'ocrOem'],
   ['--historical-cohort-approve', 'historicalCohortApprove'],
   ['--approved-by', 'approvedBy'], ['--approval-note', 'approvalNote']
 ]);
@@ -53,6 +55,7 @@ const HELP = `Usage:
   node src/cli.js --historical-discover [--from-year 1949] [--to-year YYYY] [--max-items 100]
   node src/cli.js --historical-process [--adaptive-load] [--min-items 5] [--max-items 100]
   node src/cli.js --historical-pdf-process [--adaptive-load] [--max-items 5] [--ocr-page-budget 20]
+    [--ocr-languages chi_sim+chi_tra+eng] [--ocr-dpi 300] [--ocr-psm 3] [--ocr-oem 1]
   node src/cli.js --historical-verify [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-evidence [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-analyze [--adaptive-load] [--max-items 100]
@@ -95,6 +98,10 @@ Options:
   --delay-ms N             Delay between historical queue items; default 1500
   --min-items N            Minimum adaptive batch size; default 5
   --ocr-page-budget N      Maximum newly OCRed pages per PDF and run; default 20
+  --ocr-languages IDS      Plus-separated Tesseract languages; default chi_sim+chi_tra+eng
+  --ocr-dpi N              Scan rendering resolution from 150 to 600; default 300
+  --ocr-psm N              Tesseract page segmentation mode from 0 to 13; default 3
+  --ocr-oem N              Tesseract engine mode from 0 to 3; default 1
 `;
 
 function parseArguments(argv) {
@@ -172,6 +179,27 @@ function parseArguments(argv) {
     }
     if (!options.historicalPdfProcess) {
       throw new Error('--ocr-page-budget is only valid with --historical-pdf-process');
+    }
+  }
+  const ocrIntegers = [
+    ['ocrDpi', '--ocr-dpi', 150, 600],
+    ['ocrPsm', '--ocr-psm', 0, 13],
+    ['ocrOem', '--ocr-oem', 0, 3]
+  ];
+  for (const [key, flag, minimum, maximum] of ocrIntegers) {
+    if (options[key] === undefined) continue;
+    options[key] = Number(options[key]);
+    if (!Number.isSafeInteger(options[key]) || options[key] < minimum || options[key] > maximum) {
+      throw new Error(`${flag} must be an integer from ${minimum} to ${maximum}`);
+    }
+    if (!options.historicalPdfProcess) throw new Error(`${flag} is only valid with --historical-pdf-process`);
+  }
+  if (options.ocrLanguages !== undefined) {
+    if (!/^[a-z0-9_]+(?:\+[a-z0-9_]+)*$/i.test(options.ocrLanguages)) {
+      throw new Error('--ocr-languages must contain plus-separated Tesseract identifiers');
+    }
+    if (!options.historicalPdfProcess) {
+      throw new Error('--ocr-languages is only valid with --historical-pdf-process');
     }
   }
   if (options.adaptiveLoad && !options.historicalProcess && !options.historicalPdfProcess

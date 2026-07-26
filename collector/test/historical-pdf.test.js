@@ -11,7 +11,9 @@ const { openDatabase } = require('../../server/src/db');
 const { enqueueHistoricalItem } = require('../src/historical-backfill');
 const {
   fetchPdfBuffer,
+  historicalOcrProfile,
   ocrPdfPages,
+  queueStaleOcrProfiles,
   runHistoricalPdfQueue,
   segmentPdfIssueText,
   splitPdfIssueText
@@ -237,7 +239,8 @@ test('PDF queue caches source bytes, records artifacts and creates private candi
     assert.equal(db.prepare('SELECT stage FROM historical_backfill_items WHERE parent_id IS NULL').get().stage, 'indexed');
     const children = db.prepare('SELECT * FROM historical_backfill_items WHERE parent_id IS NOT NULL ORDER BY id').all();
     assert.equal(children.length, 2);
-    assert.ok(children.every((item) => item.stage === 'needs_review' && item.document_id === null));
+    assert.ok(children.every((item) => item.stage === 'manual_review' && item.document_id === null));
+    assert.ok(children.every((item) => /comparison with official PDF pages/.test(item.last_error)));
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
     assert.deepEqual(
       db.prepare('SELECT artifact_type FROM historical_artifacts ORDER BY artifact_type').all().map((row) => row.artifact_type),
@@ -284,7 +287,8 @@ test('incomplete OCR writes a resumable checkpoint without creating candidates',
 test('OCR resumes cached pages and spends its next budget only on missing pages', async () => {
   const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-ocr-resume-'));
   const sourceChecksum = 'a'.repeat(64);
-  const pageDir = path.join(cacheDir, 'pages', sourceChecksum);
+  const profile = historicalOcrProfile();
+  const pageDir = path.join(cacheDir, 'pages', sourceChecksum, profile.id);
   try {
     fs.mkdirSync(pageDir, { recursive: true });
     fs.writeFileSync(path.join(pageDir, 'page-0001.txt'), 'cached page one');
@@ -307,6 +311,12 @@ test('OCR resumes cached pages and spends its next budget only on missing pages'
     assert.equal(first.pagesProcessed, 1);
     assert.deepEqual(first.pages.map((page) => page.page), [1, 2]);
     assert.equal(calls.filter((call) => call.name === 'tesseract').length, 1);
+    const render = calls.find((call) => call.name === 'pdftoppm');
+    assert.equal(render.args[render.args.indexOf('-r') + 1], '300');
+    const recognition = calls.find((call) => call.name === 'tesseract');
+    assert.equal(recognition.args[recognition.args.indexOf('-l') + 1], 'chi_sim+chi_tra+eng');
+    assert.equal(recognition.args[recognition.args.indexOf('--psm') + 1], '3');
+    assert.equal(recognition.args[recognition.args.indexOf('--oem') + 1], '1');
 
     calls.length = 0;
     const resumed = await ocrPdfPages('source.pdf', sourceChecksum, options);
@@ -317,6 +327,73 @@ test('OCR resumes cached pages and spends its next budget only on missing pages'
     assert.equal(calls.filter((call) => call.name === 'tesseract').length, 1);
   } finally {
     fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('OCR profile upgrades do not reuse unversioned page text', async () => {
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-ocr-profile-'));
+  const sourceChecksum = 'c'.repeat(64);
+  const legacyDir = path.join(cacheDir, 'pages', sourceChecksum);
+  try {
+    fs.mkdirSync(legacyDir, { recursive: true });
+    fs.writeFileSync(path.join(legacyDir, 'page-0001.txt'), 'legacy simplified-only OCR');
+    const calls = [];
+    const result = await ocrPdfPages('source.pdf', sourceChecksum, {
+      cacheDir,
+      pageBudget: 1,
+      pageCount: async () => 1,
+      commandImpl: async (name, args) => {
+        calls.push({ name, args });
+        return name === 'tesseract' ? { stdout: 'new traditional-aware OCR' } : { stdout: '' };
+      }
+    });
+
+    assert.equal(result.complete, true);
+    assert.equal(result.pagesProcessed, 1);
+    assert.equal(result.pages[0].text, 'new traditional-aware OCR');
+    assert.equal(result.profile.languages, 'chi_sim+chi_tra+eng');
+    assert.match(result.profile.id, /^[a-f0-9]{16}$/);
+    assert.equal(calls.filter((call) => call.name === 'tesseract').length, 1);
+  } finally {
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('stale OCR artifacts are requeued once until the current profile starts', () => {
+  const db = openDatabase(':memory:');
+  try {
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/shuju/1955/gwyb195502.pdf',
+      sourceName: 'State Council Gazette', sourceType: 'pdf', itemKind: 'issue', sourceYear: 1955
+    });
+    const itemId = Number(db.prepare('SELECT id FROM historical_backfill_items').get().id);
+    db.prepare(`
+      UPDATE historical_backfill_items SET stage = 'manual_review', next_attempt_at = datetime('now', '+1 day')
+      WHERE id = ?
+    `).run(itemId);
+    db.prepare(`
+      INSERT INTO historical_artifacts (
+        item_id, artifact_type, storage_path, checksum, byte_size,
+        page_start, page_end, engine, metadata_json
+      ) VALUES (?, 'ocr_page', 'pages/legacy/page-0001.txt', ?, 10, 1, 1, 'tesseract', ?)
+    `).run(itemId, 'd'.repeat(64), JSON.stringify({ languages: 'chi_sim+eng' }));
+    const profile = historicalOcrProfile();
+
+    assert.equal(queueStaleOcrProfiles(db, profile.id), 1);
+    const requeued = db.prepare('SELECT next_attempt_at,last_error FROM historical_backfill_items WHERE id = ?').get(itemId);
+    assert.equal(requeued.next_attempt_at, null);
+    assert.match(requeued.last_error, /profile upgrade/);
+
+    db.prepare(`
+      INSERT INTO historical_artifacts (
+        item_id, artifact_type, storage_path, checksum, byte_size,
+        page_start, page_end, engine, metadata_json
+      ) VALUES (?, 'ocr_page', 'pages/current/page-0001.txt', ?, 10, 1, 1, 'tesseract', ?)
+    `).run(itemId, 'e'.repeat(64), JSON.stringify({ ocrProfile: profile }));
+    db.prepare("UPDATE historical_backfill_items SET next_attempt_at = datetime('now', '+1 day') WHERE id = ?").run(itemId);
+    assert.equal(queueStaleOcrProfiles(db, profile.id), 0);
+  } finally {
+    db.close();
   }
 });
 

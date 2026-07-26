@@ -173,7 +173,7 @@ test('human review requires official evidence and a complete cycle/implementatio
   const item = {
     id: 1,
     item_kind: 'document',
-    stage: 'needs_review',
+    stage: 'manual_review',
     source_url: 'https://www.gov.cn/zhengce/2000-01/02/content_123.htm',
     title: '测试政策',
     issuer: '国务院',

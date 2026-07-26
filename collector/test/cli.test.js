@@ -76,10 +76,20 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   assert.throws(() => parseArguments(['--historical-process', '--delay-ms', '60001']), /0 to 60000/);
   assert.throws(() => parseArguments(['--historical-process', '--min-items', '13', '--max-items', '12']), /cannot exceed/);
   assert.throws(() => parseArguments(['--adaptive-load']), /only valid/);
-  const pdf = parseArguments(['--historical-pdf-process', '--adaptive-load', '--ocr-page-budget', '20']);
+  const pdf = parseArguments([
+    '--historical-pdf-process', '--adaptive-load', '--ocr-page-budget', '20',
+    '--ocr-languages', 'chi_sim+chi_tra+eng', '--ocr-dpi', '300', '--ocr-psm', '3', '--ocr-oem', '1'
+  ]);
   assert.equal(pdf.historicalPdfProcess, true);
   assert.equal(pdf.ocrPageBudget, 20);
+  assert.equal(pdf.ocrLanguages, 'chi_sim+chi_tra+eng');
+  assert.equal(pdf.ocrDpi, 300);
+  assert.equal(pdf.ocrPsm, 3);
+  assert.equal(pdf.ocrOem, 1);
   assert.throws(() => parseArguments(['--historical-pdf-process', '--ocr-page-budget', '201']), /1 to 200/);
+  assert.throws(() => parseArguments(['--historical-pdf-process', '--ocr-dpi', '149']), /150 to 600/);
+  assert.throws(() => parseArguments(['--historical-pdf-process', '--ocr-languages', 'chi_sim,chi_tra']), /plus-separated/);
+  assert.throws(() => parseArguments(['--ocr-psm', '3']), /only valid/);
   assert.equal(parseArguments(['--historical-verify', '--adaptive-load']).historicalVerify, true);
   assert.equal(parseArguments(['--historical-evidence', '--adaptive-load']).historicalEvidence, true);
   assert.equal(parseArguments(['--historical-analyze', '--adaptive-load']).historicalAnalyze, true);

@@ -139,8 +139,8 @@ function verifyOcrTools() {
   const installed = tesseractLanguages(`${languages.stdout || ''}\n${languages.stderr || ''}`);
   checks.push({
     name: 'tesseract_languages',
-    ok: languages.status === 0 && installed.has('chi_sim') && installed.has('eng'),
-    details: `required chi_sim, eng; found ${[...installed].sort().join(', ')}`
+    ok: languages.status === 0 && installed.has('chi_sim') && installed.has('chi_tra') && installed.has('eng'),
+    details: `required chi_sim, chi_tra, eng; found ${[...installed].sort().join(', ')}`
   });
   return checks;
 }
