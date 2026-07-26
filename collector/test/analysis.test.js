@@ -25,6 +25,8 @@ test('rules analysis explicitly labels its method and preserves evidence boundar
   assert.match(analysis.signals[0].evidenceQuote, /60万亿元/);
   assert.equal(analysis.ambiguities[0].severity, 'high');
   assert.ok(analysis.forecasts.every((forecast) => forecast.status === 'pending'));
+  assert.equal(analysis.framework.ready, false);
+  assert.match(analysis.framework.bottomLine, /尚未完成/);
 });
 
 test('checksum is stable across whitespace-only changes', () => {

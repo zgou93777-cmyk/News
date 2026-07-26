@@ -28,6 +28,11 @@ test('auto mode uses normalized OpenAI-compatible JSON when configured', async (
     return new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({
         summary: '模型摘要',
+        bottom_line: '这是一项执行测试，不代表结果已经出现。',
+        policy_problem: '测试执行链路是否完整。',
+        policy_tools: [{ label: '发布要求', detail: '由测试部门发布并继续核验。' }],
+        affected_groups: [{ label: '执行部门', detail: '需要提供正式执行数据。' }],
+        execution_path: [{ label: '原文发布', detail: '先发布政策，再核验执行数据。' }],
         facts: [{ label: '已发布', quote: '测试部门发布政策，后续应核验正式执行数据。', confidence: 0.9 }],
         forecasts: [{ statement: '可能出现细则', basis: '政策要求', expected_by: '2026-10-01', confidence: 60 }],
         ambiguities: ['资金规模未公开']
@@ -42,6 +47,8 @@ test('auto mode uses normalized OpenAI-compatible JSON when configured', async (
   assert.equal(output.analysis.modelName, 'openai-compatible:test-model');
   assert.equal(output.analysis.forecasts[0].confidence, 0.6);
   assert.equal(output.analysis.signals[0].evidenceQuote, '测试部门发布政策，后续应核验正式执行数据。');
+  assert.equal(output.analysis.framework.ready, true);
+  assert.equal(output.analysis.promptVersion, 'analyze-policy-v2');
 });
 
 test('auto mode falls back to rules while explicit model mode fails', async () => {

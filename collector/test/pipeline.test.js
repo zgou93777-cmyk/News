@@ -58,6 +58,7 @@ test('stores once, appends on changed content, and notifies only for changes', a
     assert.equal(calls.length, 2);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 1);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM analysis_versions').get().count, 2);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM analysis_frameworks').get().count, 2);
     assert.equal(db.prepare('SELECT MAX(version) AS version FROM analysis_versions').get().version, 2);
     const family = db.prepare(`
       SELECT pf.slug, pf.title FROM documents d
