@@ -6,7 +6,7 @@ const { spawnSync } = require('node:child_process');
 const path = require('node:path');
 const { DatabaseSync } = require('node:sqlite');
 
-const EXPECTED_SCHEMA = '15';
+const EXPECTED_SCHEMA = '16';
 const REQUIRED_TABLES = [
   'analysis_frameworks',
   'historical_backfill_items',
@@ -17,6 +17,7 @@ const REQUIRED_TABLES = [
   'historical_policy_evidence',
   'historical_evidence_searches',
   'historical_analysis_versions',
+  'historical_analysis_frameworks',
   'historical_review_submissions',
   'historical_release_cohorts',
   'historical_release_cohort_items',
@@ -119,6 +120,17 @@ function verifyDatabase(db) {
           )
         ) AS assessment_violations,
         count(*) FILTER (
+          WHERE item.stage IN ('ready', 'published') AND NOT EXISTS (
+            SELECT 1 FROM historical_analysis_frameworks framework
+            WHERE framework.id = CAST(json_extract(item.analysis_json, '$.frameworkVersionId') AS INTEGER)
+              AND framework.assessment_version_id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
+              AND framework.version = CAST(json_extract(item.analysis_json, '$.frameworkVersion') AS INTEGER)
+              AND framework.source_checksum = item.checksum
+              AND json_extract(framework.framework_json, '$.ready') IS 1
+              AND json_array_length(framework.evidence_json) > 0
+          )
+        ) AS framework_violations,
+        count(*) FILTER (
           WHERE item.stage IN ('ready', 'published') AND item.source_type = 'pdf'
             AND NOT EXISTS (
               SELECT 1
@@ -141,6 +153,8 @@ function verifyDatabase(db) {
     `).get();
     add('historical_assessments', Number(integrity.assessment_violations) === 0,
       `${integrity.assessment_violations} violation(s)`);
+    add('historical_frameworks', Number(integrity.framework_violations) === 0,
+      `${integrity.framework_violations} violation(s)`);
     add('historical_pdf_segmentations', Number(integrity.segmentation_violations) === 0,
       `${integrity.segmentation_violations} violation(s)`);
     add('historical_releases', Number(integrity.release_violations) === 0,
