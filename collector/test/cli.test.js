@@ -62,9 +62,11 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   assert.equal(discovery.historicalDiscover, true);
   assert.equal(discovery.fromYear, 1949);
   assert.equal(discovery.toYear, 2000);
-  const processing = parseArguments(['--historical-process', '--max-items', '2', '--delay-ms', '2500']);
+  const processing = parseArguments(['--historical-process', '--adaptive-load', '--min-items', '2', '--max-items', '12', '--delay-ms', '2500']);
   assert.equal(processing.historicalProcess, true);
-  assert.equal(processing.maxItems, 2);
+  assert.equal(processing.adaptiveLoad, true);
+  assert.equal(processing.minItems, 2);
+  assert.equal(processing.maxItems, 12);
   assert.equal(processing.delayMs, 2500);
   assert.throws(
     () => parseArguments(['--historical-discover', '--historical-process']),
@@ -72,4 +74,6 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   );
   assert.throws(() => parseArguments(['--historical-discover', '--from-year', '1948']), /between 1949/);
   assert.throws(() => parseArguments(['--historical-process', '--delay-ms', '60001']), /0 to 60000/);
+  assert.throws(() => parseArguments(['--historical-process', '--min-items', '13', '--max-items', '12']), /cannot exceed/);
+  assert.throws(() => parseArguments(['--adaptive-load']), /only valid/);
 });

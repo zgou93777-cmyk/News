@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 
 const { checksumFor } = require('./analysis');
@@ -227,6 +228,29 @@ function queueItems(db, maximum) {
   `).all(...PROCESSABLE_STAGES, maximum);
 }
 
+function currentLoadSnapshot() {
+  const cpuCount = Math.max(1, typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length);
+  const totalMemory = Math.max(1, os.totalmem());
+  return {
+    cpuCount,
+    load1: os.loadavg()[0],
+    normalizedLoad: os.loadavg()[0] / cpuCount,
+    freeMemoryRatio: os.freemem() / totalMemory
+  };
+}
+
+function adaptiveBatchSize(maximum, minimum, snapshot) {
+  const floor = Math.min(maximum, Math.max(1, minimum));
+  if (snapshot.normalizedLoad >= 1 || snapshot.freeMemoryRatio < 0.08) return floor;
+  if (snapshot.normalizedLoad >= 0.75 || snapshot.freeMemoryRatio < 0.12) {
+    return Math.max(floor, Math.ceil(maximum * 0.25));
+  }
+  if (snapshot.normalizedLoad >= 0.45 || snapshot.freeMemoryRatio < 0.2) {
+    return Math.max(floor, Math.ceil(maximum * 0.5));
+  }
+  return maximum;
+}
+
 function updateQueueFailure(db, item, error) {
   const attempts = item.attempts + 1;
   const retryHours = Math.min(168, 2 ** Math.min(attempts, 7));
@@ -250,9 +274,13 @@ function markManualPdf(db, item, contentType) {
 }
 
 async function processQueueItem(db, item, options, dependencies) {
+  if (item.source_type === 'pdf') {
+    if (!options.dryRun) markManualPdf(db, item, 'application/pdf');
+    return { id: item.id, action: 'manual_pdf_review', url: item.source_url };
+  }
   const fetched = await (dependencies.fetchText || fetchText)(item.source_url, dependencies.fetchImpl, options.fetchTimeoutMs);
   const contentType = String(fetched.contentType || '').toLowerCase();
-  if (item.source_type === 'pdf' || contentType.includes('pdf')) {
+  if (contentType.includes('pdf')) {
     if (!options.dryRun) markManualPdf(db, item, contentType);
     return { id: item.id, action: 'manual_pdf_review', url: item.source_url };
   }
@@ -311,11 +339,36 @@ async function processQueueItem(db, item, options, dependencies) {
 }
 
 async function runHistoricalQueue(db, options = {}, dependencies = {}) {
-  const maximum = options.maxItems || 2;
+  const maximum = options.maxItems || 100;
+  const minimum = Math.min(maximum, options.minItems || 5);
   const delayMs = options.delayMs ?? 1500;
   const items = queueItems(db, maximum);
-  const result = { status: 'succeeded', selected: items.length, processed: 0, items: [], errors: [] };
+  const readLoad = dependencies.loadSnapshot || currentLoadSnapshot;
+  const initialLoad = readLoad();
+  const initialCapacity = options.adaptiveLoad
+    ? adaptiveBatchSize(maximum, minimum, initialLoad)
+    : maximum;
+  const result = {
+    status: 'succeeded',
+    selected: items.length,
+    planned: Math.min(items.length, initialCapacity),
+    processed: 0,
+    adaptiveLoad: Boolean(options.adaptiveLoad),
+    load: initialLoad,
+    stoppedDueToLoad: false,
+    items: [],
+    errors: []
+  };
   for (let index = 0; index < items.length; index += 1) {
+    if (options.adaptiveLoad && index >= minimum) {
+      const currentCapacity = adaptiveBatchSize(maximum, minimum, readLoad());
+      if (index >= currentCapacity) {
+        result.stoppedDueToLoad = true;
+        break;
+      }
+    } else if (index >= initialCapacity) {
+      break;
+    }
     const item = items[index];
     try {
       result.items.push(await processQueueItem(db, item, options, dependencies));
@@ -324,7 +377,8 @@ async function runHistoricalQueue(db, options = {}, dependencies = {}) {
       if (!options.dryRun) updateQueueFailure(db, item, error);
       result.errors.push({ id: item.id, url: item.source_url, message: error.message });
     }
-    if (delayMs > 0 && index < items.length - 1) {
+    // PDF entries are only moved into the private OCR queue and make no remote request.
+    if (delayMs > 0 && item.source_type !== 'pdf' && index < items.length - 1) {
       await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
   }
@@ -345,6 +399,8 @@ module.exports = {
   discoverHistoricalLinks,
   enqueueHistoricalItem,
   historicalQueueStats,
+  adaptiveBatchSize,
+  currentLoadSnapshot,
   loadHistoricalSources,
   runHistoricalDiscovery,
   runHistoricalQueue

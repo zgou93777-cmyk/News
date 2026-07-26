@@ -11,7 +11,8 @@ Group=policy-monitor
 WorkingDirectory=/opt/policy-monitor/collector
 EnvironmentFile=/etc/policy-monitor/policy-monitor.env
 Environment=NODE_ENV=production
-ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-process --max-items 2 --delay-ms 5000
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-discover --from-year 1949 --max-items 100
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-process --adaptive-load --min-items 5 --max-items 100 --delay-ms 5000
 TimeoutStartSec=20min
 MemoryMax=320M
 NoNewPrivileges=true

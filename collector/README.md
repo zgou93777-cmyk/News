@@ -52,8 +52,8 @@ node src/cli.js --reconcile-relevance --apply
 # 读取国务院公报官方导航，记录真实缺口并建立私有队列
 node src/cli.js --historical-discover --from-year 1949 --max-items 100
 
-# 每次串行处理 2 条，条目之间等待 5 秒
-node src/cli.js --historical-process --max-items 2 --delay-ms 5000
+# 每次根据 CPU 和可用内存在 5—100 条之间动态调整；远程请求间隔 5 秒
+node src/cli.js --historical-process --adaptive-load --min-items 5 --max-items 100 --delay-ms 5000
 
 # 查看私有队列，不影响首页或公开 API
 node src/cli.js --historical-status
@@ -113,7 +113,7 @@ sudo systemctl start policy-monitor-collector.service
 sudo systemctl status policy-monitor-collector.service --no-pager
 ```
 
-日常采集定时器每个偶数小时的 15 分运行一次；历史队列每天仅串行处理 2 条，并加入请求间隔。常驻的是 systemd 定时器，不是 Node 进程；平时只占极少的定时器元数据，采集期间才短时占用 CPU 和内存。
+日常采集定时器每个偶数小时的 15 分运行一次；历史队列每小时设置一个窗口，先从官方导航补充下一批最多 100 个未入队期号，再根据 CPU 一分钟负载和可用内存动态处理 5—100 条。PDF 期号只做本地私有分流，不等待；需要访问官方站点的 HTML 和文章保持 5 秒请求间隔。低负载时一天理论可推进约 2400 个队列项，任务执行中负载升高会提前结束本批次。抓取和公开核验仍严格分离，处理速度提高不会让未经审校的内容提前展示。
 
 API 或采集任务异常退出时，`policy-monitor-alert@.service` 会使用同一套受保护环境变量发送钉钉告警；告警文本不包含 webhook 或签名密钥。
 

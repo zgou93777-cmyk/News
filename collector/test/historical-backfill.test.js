@@ -5,6 +5,7 @@ const test = require('node:test');
 
 const { openDatabase } = require('../../server/src/db');
 const {
+  adaptiveBatchSize,
   discoverHistoricalLinks,
   enqueueHistoricalItem,
   historicalQueueStats,
@@ -211,4 +212,41 @@ test('human review requires official evidence and a complete cycle/implementatio
     () => validateHistoricalReview(item, { ...valid, implementationEvidence: [] }),
     /requires evidence/
   );
+});
+
+test('adaptive history batches use capacity when idle and stop early under pressure', async () => {
+  assert.equal(adaptiveBatchSize(12, 2, { normalizedLoad: 0.2, freeMemoryRatio: 0.4 }), 12);
+  assert.equal(adaptiveBatchSize(12, 2, { normalizedLoad: 0.5, freeMemoryRatio: 0.4 }), 6);
+  assert.equal(adaptiveBatchSize(12, 2, { normalizedLoad: 0.8, freeMemoryRatio: 0.4 }), 3);
+  assert.equal(adaptiveBatchSize(12, 2, { normalizedLoad: 1.2, freeMemoryRatio: 0.4 }), 2);
+
+  const db = openDatabase(':memory:');
+  try {
+    for (let issue = 1; issue <= 5; issue += 1) {
+      enqueueHistoricalItem(db, {
+        url: `https://www.gov.cn/gongbao/shuju/1954/gwyb1954${String(issue).padStart(2, '0')}.pdf`,
+        sourceName: '中华人民共和国国务院公报',
+        sourceType: 'pdf',
+        itemKind: 'issue',
+        sourceYear: 1954
+      });
+    }
+    let reads = 0;
+    const result = await runHistoricalQueue(db, {
+      adaptiveLoad: true,
+      minItems: 2,
+      maxItems: 5,
+      delayMs: 0
+    }, {
+      fetchText: async (url) => ({ body: '%PDF', contentType: 'application/pdf', finalUrl: url }),
+      loadSnapshot: () => (++reads === 1
+        ? { normalizedLoad: 0.1, freeMemoryRatio: 0.5 }
+        : { normalizedLoad: 1.2, freeMemoryRatio: 0.5 })
+    });
+    assert.equal(result.processed, 2);
+    assert.equal(result.stoppedDueToLoad, true);
+    assert.deepEqual(historicalQueueStats(db), { discovered: 3, manual_review: 2 });
+  } finally {
+    db.close();
+  }
 });

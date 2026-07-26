@@ -23,7 +23,7 @@ const VALUE_OPTIONS = new Map([
   ['--public-base-url', 'publicBaseUrl'], ['--db-path', 'dbPath'],
   ['--family-slug', 'familySlug'], ['--family-title', 'familyTitle'],
   ['--historical-source', 'historicalSource'], ['--historical-sources-file', 'historicalSourcesFile'],
-  ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'],
+  ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'], ['--min-items', 'minItems'],
   ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile']
 ]);
 
@@ -37,7 +37,7 @@ const HELP = `Usage:
   node src/cli.js --reconcile-relevance [--dry-run|--apply]
   node src/cli.js --reconcile-lineage [--dry-run|--apply]
   node src/cli.js --historical-discover [--from-year 1949] [--to-year YYYY] [--max-items 100]
-  node src/cli.js --historical-process [--max-items 2] [--delay-ms 1500]
+  node src/cli.js --historical-process [--adaptive-load] [--min-items 5] [--max-items 100]
   node src/cli.js --historical-status
   node src/cli.js --historical-review <queue-id> --review-file <review.json> [--dry-run]
 
@@ -54,12 +54,14 @@ Options:
   --public-base-url URL     Override PUBLIC_BASE_URL for notification links
   --historical-discover    Discover official archive entries into the private review queue
   --historical-process     Slowly fetch/extract queued entries; never publishes them
+  --adaptive-load          Recheck CPU and memory pressure between historical items
   --historical-status      Show private queue counts by stage
   --historical-review ID   Validate a structured human review; moves only to private ready state
   --review-file PATH       Review evidence, policy cycle, implementation, outcome and analysis JSON
   --from-year YYYY         Historical discovery lower bound; minimum 1949
   --to-year YYYY           Historical discovery upper bound
   --delay-ms N             Delay between historical queue items; default 1500
+  --min-items N            Minimum adaptive batch size; default 5
 `;
 
 function parseArguments(argv) {
@@ -77,6 +79,7 @@ function parseArguments(argv) {
     else if (argument === '--historical-discover') options.historicalDiscover = true;
     else if (argument === '--historical-process') options.historicalProcess = true;
     else if (argument === '--historical-status') options.historicalStatus = true;
+    else if (argument === '--adaptive-load') options.adaptiveLoad = true;
     else if (argument === '--apply') options.apply = true;
     else if (VALUE_OPTIONS.has(argument)) {
       const value = argv[index + 1];
@@ -96,6 +99,15 @@ function parseArguments(argv) {
       throw new Error('--max-items must be an integer from 1 to 100');
     }
   }
+  if (options.minItems !== undefined) {
+    options.minItems = Number(options.minItems);
+    if (!Number.isSafeInteger(options.minItems) || options.minItems < 1 || options.minItems > 100) {
+      throw new Error('--min-items must be an integer from 1 to 100');
+    }
+    if (options.maxItems && options.minItems > options.maxItems) {
+      throw new Error('--min-items cannot exceed --max-items');
+    }
+  }
   const currentYear = new Date().getFullYear();
   for (const key of ['fromYear', 'toYear']) {
     if (options[key] === undefined) continue;
@@ -112,6 +124,12 @@ function parseArguments(argv) {
     if (!Number.isSafeInteger(options.delayMs) || options.delayMs < 0 || options.delayMs > 60_000) {
       throw new Error('--delay-ms must be an integer from 0 to 60000');
     }
+  }
+  if (options.adaptiveLoad && !options.historicalProcess) {
+    throw new Error('--adaptive-load is only valid with --historical-process');
+  }
+  if (options.minItems !== undefined && !options.historicalProcess) {
+    throw new Error('--min-items is only valid with --historical-process');
   }
   const modes = [
     Boolean(options.url), Boolean(options.file), Boolean(options.allSources),
