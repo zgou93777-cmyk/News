@@ -1,0 +1,46 @@
+{
+  "id": "./",
+  "name": "政知镜 · 政策跟踪与复盘",
+  "short_name": "政知镜",
+  "description": "政策原文、历史沿革、落地证据与前瞻研判",
+  "lang": "zh-CN",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f4f5f2",
+  "theme_color": "#b42318",
+  "categories": ["news", "business", "productivity"],
+  "icons": [
+    {
+      "src": "assets/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "assets/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "最新政策",
+      "short_name": "最新",
+      "url": "./#/"
+    },
+    {
+      "name": "落地追踪",
+      "short_name": "追踪",
+      "url": "./#/tracking"
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+[Unit]
+Description=Policy intelligence monitor
+After=network-online.target
+Wants=network-online.target
+OnFailure=policy-monitor-alert@%n.service
+
+[Service]
+Type=simple
+User=policy-monitor
+Group=policy-monitor
+WorkingDirectory=/opt/policy-monitor/server
+EnvironmentFile=/etc/policy-monitor/policy-monitor.env
+Environment=NODE_ENV=production
+ExecStartPre=/usr/local/bin/node --disable-warning=ExperimentalWarning scripts/init-db.js
+ExecStartPre=/usr/local/bin/node --disable-warning=ExperimentalWarning scripts/seed.js
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning src/server.js
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/policy-monitor
+LimitNOFILE=4096
+MemoryMax=384M
+
+[Install]
+WantedBy=multi-user.target

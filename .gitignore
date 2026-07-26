@@ -1,0 +1,35 @@
+# Dependencies and test output
+node_modules/
+coverage/
+
+# Runtime configuration and secrets
+.env
+.env.*
+!.env.example
+!**/.env.example
+*.pem
+*.key
+
+# Runtime data
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.log
+
+# Collector-generated assets
+frontend/assets/covers/source-*
+
+# Local backups and transfer archives
+.backups/
+*.rollback-*/
+*.tar.gz
+*.zip
+
+# Editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp

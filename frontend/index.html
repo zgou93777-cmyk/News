@@ -1,0 +1,159 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#b42318">
+    <meta name="color-scheme" content="light">
+    <meta name="description" content="政策原文、历史沿革、落地证据与前瞻研判">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="政知镜">
+    <title>政知镜 · 政策跟踪与复盘</title>
+    <link rel="manifest" href="manifest.webmanifest?v=20260720">
+    <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" sizes="180x180" href="assets/icon-180.png">
+    <link rel="preconnect" href="https://images.unsplash.com">
+    <link rel="stylesheet" href="styles.css?v=20260720-views">
+    <script defer src="https://unpkg.com/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script defer src="app.js?v=20260726-completeness"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到正文</a>
+
+    <header class="site-header">
+      <div class="utility-bar">
+        <div class="page-width utility-inner">
+          <span id="current-date">政策动态持续更新</span>
+          <span class="utility-status"><span class="live-dot" aria-hidden="true"></span>公开信源监测中</span>
+        </div>
+      </div>
+
+      <div class="page-width masthead">
+        <a class="brand" href="#/" aria-label="政知镜首页">
+          <span class="brand-mark" aria-hidden="true">政</span>
+          <span class="brand-text">
+            <strong>政知镜</strong>
+            <small>政策跟踪与复盘</small>
+          </span>
+        </a>
+
+        <nav class="desktop-nav" aria-label="主导航">
+          <a class="is-active" href="#/" data-nav="home">首页</a>
+          <a href="#/archive" data-nav="archive">政策库</a>
+          <a href="#/tracking" data-nav="tracking">落地追踪</a>
+          <a href="#/outlook" data-nav="outlook">前瞻研判</a>
+        </nav>
+
+        <div class="header-actions">
+          <button class="icon-button" id="search-toggle" type="button" aria-label="打开搜索" title="搜索">
+            <i data-lucide="search" aria-hidden="true"></i>
+          </button>
+          <button class="install-button" id="install-button" type="button">
+            <i data-lucide="download" aria-hidden="true"></i>
+            <span>添加到设备</span>
+          </button>
+          <button class="subscribe-button" id="push-button" type="button">
+            <i data-lucide="bell" aria-hidden="true"></i>
+            <span>订阅提醒</span>
+          </button>
+          <button class="icon-button mobile-only" id="menu-toggle" type="button" aria-label="打开菜单" aria-expanded="false" title="菜单">
+            <i data-lucide="menu" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+
+      <div class="search-drawer" id="search-drawer" hidden>
+        <form class="page-width search-form" id="global-search-form" role="search">
+          <i data-lucide="search" aria-hidden="true"></i>
+          <label class="sr-only" for="global-search">搜索政策、部门或关键词</label>
+          <input id="global-search" name="q" type="search" placeholder="搜索政策、部门或关键词" autocomplete="off">
+          <button class="text-button" type="submit">搜索</button>
+          <button class="icon-button" id="search-close" type="button" aria-label="关闭搜索" title="关闭">
+            <i data-lucide="x" aria-hidden="true"></i>
+          </button>
+        </form>
+      </div>
+
+      <nav class="mobile-menu" id="mobile-menu" aria-label="移动端导航" hidden>
+        <a href="#/" data-nav="home">首页</a>
+        <a href="#/archive" data-nav="archive">政策库</a>
+        <a href="#/tracking" data-nav="tracking">落地追踪</a>
+        <a href="#/outlook" data-nav="outlook">前瞻研判</a>
+      </nav>
+    </header>
+
+    <main id="main-content" tabindex="-1">
+      <div class="loading-screen" id="loading-screen" aria-live="polite">
+        <span class="loading-mark">政</span>
+        <p>正在整理政策线索…</p>
+      </div>
+      <div id="app" hidden></div>
+    </main>
+
+    <footer class="site-footer">
+      <div class="page-width footer-grid">
+        <div>
+          <div class="footer-brand">政知镜</div>
+          <p>依据公开政策原文和可核验事实进行持续跟踪。研判不构成投资、法律或行政建议。</p>
+        </div>
+        <div class="footer-links" aria-label="页脚导航">
+          <a href="#/archive">政策库</a>
+          <a href="#/tracking">证据追踪</a>
+          <a href="#/about">方法说明</a>
+        </div>
+        <div class="footer-meta">
+          <span id="sync-time">数据待同步</span>
+          <span>© 2026 政知镜</span>
+        </div>
+      </div>
+    </footer>
+
+    <nav class="bottom-nav" aria-label="快捷导航">
+      <a class="is-active" href="#/" data-nav="home"><i data-lucide="newspaper" aria-hidden="true"></i><span>首页</span></a>
+      <a href="#/archive" data-nav="archive"><i data-lucide="library" aria-hidden="true"></i><span>政策库</span></a>
+      <a href="#/tracking" data-nav="tracking"><i data-lucide="waypoints" aria-hidden="true"></i><span>追踪</span></a>
+      <button id="mobile-install-button" type="button"><i data-lucide="download" aria-hidden="true"></i><span>添加</span></button>
+      <button id="mobile-push-button" type="button"><i data-lucide="bell" aria-hidden="true"></i><span>提醒</span></button>
+    </nav>
+
+    <dialog class="push-dialog" id="push-dialog" aria-labelledby="push-dialog-title">
+      <button class="dialog-close icon-button" id="push-dialog-close" type="button" aria-label="关闭" title="关闭">
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+      <span class="dialog-icon" aria-hidden="true"><i data-lucide="bell-ring"></i></span>
+      <p class="eyebrow">消息订阅</p>
+      <h2 id="push-dialog-title">重要政策，不必反复刷新</h2>
+      <p id="push-dialog-copy">有新政策或已跟踪判断出现关键变化时，我们会发送一条简洁提醒。</p>
+      <div class="device-guide" id="device-guide"></div>
+      <div class="dialog-actions">
+        <button class="primary-button" id="enable-push" type="button">
+          <i data-lucide="bell" aria-hidden="true"></i>
+          <span>开启通知</span>
+        </button>
+        <button class="secondary-button" id="install-app" type="button" hidden>
+          <i data-lucide="download" aria-hidden="true"></i>
+          <span>安装到设备</span>
+        </button>
+      </div>
+      <p class="privacy-note"><i data-lucide="shield-check" aria-hidden="true"></i>只发送政策提醒，可随时在浏览器设置中关闭。</p>
+    </dialog>
+
+    <dialog class="push-dialog install-dialog" id="install-dialog" aria-labelledby="install-dialog-title">
+      <button class="dialog-close icon-button" id="install-dialog-close" type="button" aria-label="关闭" title="关闭">
+        <i data-lucide="x" aria-hidden="true"></i>
+      </button>
+      <span class="dialog-icon install-dialog-icon" aria-hidden="true"><i data-lucide="download"></i></span>
+      <p class="eyebrow">添加到设备</p>
+      <h2 id="install-dialog-title">随时打开政知镜</h2>
+      <div class="device-guide" id="install-device-guide"></div>
+      <button class="primary-button install-dialog-action" id="install-dialog-action" type="button" hidden>
+        <i data-lucide="download" aria-hidden="true"></i>
+        <span>立即添加</span>
+      </button>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+    <noscript>请启用 JavaScript 以查看政策分析和历史追踪。</noscript>
+  </body>
+</html>

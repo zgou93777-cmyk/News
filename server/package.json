@@ -1,0 +1,22 @@
+{
+  "name": "policy-monitor-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Low-memory policy archive, analysis and notification service",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=24.13.0"
+  },
+  "scripts": {
+    "init-db": "node scripts/init-db.js",
+    "seed": "node scripts/seed.js",
+    "start": "node src/server.js",
+    "generate-vapid": "node scripts/generate-vapid.js",
+    "notify": "node scripts/send-notification.js",
+    "alert": "node scripts/send-alert.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}

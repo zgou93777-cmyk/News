@@ -1,0 +1,74 @@
+[
+  {
+    "id": "gov-policy",
+    "name": "中国政府网-最新政策",
+    "institution": "国务院",
+    "tier": "P0",
+    "url": "https://www.gov.cn/zhengce/zuixin/",
+    "enabled": true
+  },
+  {
+    "id": "gov-news",
+    "name": "中国政府网-要闻",
+    "institution": "国务院",
+    "tier": "P0",
+    "url": "https://www.gov.cn/yaowen/liebiao/",
+    "enabled": true
+  },
+  {
+    "id": "gov-explain",
+    "name": "中国政府网-政策解读",
+    "institution": "国务院",
+    "tier": "P0",
+    "url": "https://www.gov.cn/zhengce/jiedu/",
+    "enabled": true
+  },
+  {
+    "id": "ndrc-news",
+    "name": "国家发展改革委-新闻发布",
+    "institution": "国家发展改革委",
+    "tier": "P1",
+    "url": "https://www.ndrc.gov.cn/xwdt/xwfb/",
+    "enabled": true
+  },
+  {
+    "id": "mof-news",
+    "name": "财政部-财政新闻",
+    "institution": "财政部",
+    "tier": "P1",
+    "url": "https://www.mof.gov.cn/zhengwuxinxi/caizhengxinwen/",
+    "enabled": true
+  },
+  {
+    "id": "pbc-news",
+    "name": "中国人民银行-沟通交流",
+    "institution": "中国人民银行",
+    "tier": "P1",
+    "url": "https://www.pbc.gov.cn/goutongjiaoliu/113456/113469/index.html",
+    "enabled": true
+  },
+  {
+    "id": "mohurd-news",
+    "name": "住房城乡建设部-工作动态",
+    "institution": "住房城乡建设部",
+    "tier": "P1",
+    "url": "https://www.mohurd.gov.cn/xinwen/gzdt/",
+    "enabled": true
+  },
+  {
+    "id": "mofcom-news",
+    "name": "商务部-新闻发布",
+    "institution": "商务部",
+    "tier": "P1",
+    "url": "https://www.mofcom.gov.cn/xwfb/",
+    "enabled": true
+  },
+  {
+    "id": "stats-release",
+    "name": "国家统计局-最新发布",
+    "institution": "国家统计局",
+    "tier": "P4",
+    "url": "https://www.stats.gov.cn/sj/zxfb/",
+    "enabled": true
+  }
+]

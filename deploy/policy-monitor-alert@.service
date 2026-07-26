@@ -1,0 +1,24 @@
+[Unit]
+Description=Policy Monitor failure alert for %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=policy-monitor
+Group=policy-monitor
+WorkingDirectory=/opt/policy-monitor/server
+EnvironmentFile=/etc/policy-monitor/policy-monitor.env
+Environment=NODE_ENV=production
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning scripts/send-alert.js %i
+UMask=0077
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Policy Monitor collector every two hours
+
+[Timer]
+OnCalendar=*-*-* 0,2,4,6,8,10,12,14,16,18,20,22:15:00
+Persistent=true
+RandomizedDelaySec=5min
+Unit=policy-monitor-collector.service
+
+[Install]
+WantedBy=timers.target
