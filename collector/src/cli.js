@@ -21,6 +21,7 @@ const { runHistoricalPdfQueue } = require('./historical-pdf');
 const { runHistoricalVerificationQueue } = require('./historical-verification');
 const { runHistoricalEvidenceQueue } = require('./historical-evidence');
 const { runHistoricalAnalysisQueue } = require('./historical-analysis');
+const { runHistoricalFrameworkQueue } = require('./historical-framework');
 const { runHistoricalReleaseQueue } = require('./historical-release');
 const { approveHistoricalCohort, auditHistoricalCohort } = require('./historical-cohort');
 const { runCollection, runSeedBackfill } = require('./pipeline');
@@ -64,6 +65,7 @@ const HELP = `Usage:
   node src/cli.js --historical-verify [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-evidence [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-analyze [--adaptive-load] [--max-items 100]
+  node src/cli.js --historical-framework [--analysis auto|model] [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-cohort-audit [--max-items 100]
   node src/cli.js --historical-cohort-approve <cohort-id> --approved-by <id> --approval-note <text>
   node src/cli.js --historical-release [--adaptive-load] [--max-items 100]
@@ -90,6 +92,7 @@ Options:
   --historical-verify      Verify private source metadata and official lifecycle evidence
   --historical-evidence    Find implementation, paid funding and outcome evidence
   --historical-analyze     Apply auditable four-status analysis and release gates
+  --historical-framework   Build citation-checked policy explanations; incomplete items remain private
   --historical-cohort-audit Validate the first complete private cohort without publishing
   --historical-cohort-approve ID  Explicitly approve a validated cohort for limited release
   --historical-release     Publish only ready items that pass database release guards
@@ -133,6 +136,7 @@ function parseArguments(argv) {
     else if (argument === '--historical-verify') options.historicalVerify = true;
     else if (argument === '--historical-evidence') options.historicalEvidence = true;
     else if (argument === '--historical-analyze') options.historicalAnalyze = true;
+    else if (argument === '--historical-framework') options.historicalFramework = true;
     else if (argument === '--historical-cohort-audit') options.historicalCohortAudit = true;
     else if (argument === '--historical-release') options.historicalRelease = true;
     else if (argument === '--historical-status') options.historicalStatus = true;
@@ -216,11 +220,13 @@ function parseArguments(argv) {
   }
   if (options.adaptiveLoad && !options.historicalProcess && !options.historicalPdfProcess
       && !options.historicalVerify && !options.historicalEvidence && !options.historicalAnalyze
+      && !options.historicalFramework
       && !options.historicalRelease) {
     throw new Error('--adaptive-load is only valid with a historical processing mode');
   }
   if (options.minItems !== undefined && !options.historicalProcess && !options.historicalPdfProcess
       && !options.historicalVerify && !options.historicalEvidence && !options.historicalAnalyze
+      && !options.historicalFramework
       && !options.historicalRelease) {
     throw new Error('--min-items is only valid with a historical processing mode');
   }
@@ -230,6 +236,7 @@ function parseArguments(argv) {
     Boolean(options.reconcileRelevance), Boolean(options.reconcileLineage),
     Boolean(options.historicalDiscover), Boolean(options.historicalProcess), Boolean(options.historicalPdfProcess),
     Boolean(options.historicalVerify), Boolean(options.historicalEvidence), Boolean(options.historicalAnalyze),
+    Boolean(options.historicalFramework),
     Boolean(options.historicalCohortAudit), Boolean(options.historicalCohortApprove),
     Boolean(options.historicalRelease), Boolean(options.historicalStatus),
     Boolean(options.historicalAudit),
@@ -319,6 +326,8 @@ async function main() {
         ? await runHistoricalEvidenceQueue(db, { ...options, notify: false })
       : options.historicalAnalyze
         ? await runHistoricalAnalysisQueue(db, { ...options, notify: false })
+      : options.historicalFramework
+        ? await runHistoricalFrameworkQueue(db, { ...options, notify: false })
       : options.historicalCohortAudit
         ? auditHistoricalCohort(db, options)
       : options.historicalCohortApprove

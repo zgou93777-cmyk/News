@@ -74,6 +74,15 @@ function reviewTemplate(item, context) {
       ambiguities: [],
       evidenceQuotes: []
     },
+    framework: {
+      bottom_line: '',
+      policy_problem: { text: '', evidence_refs: [] },
+      policy_tools: [],
+      affected_groups: [],
+      execution_path: [],
+      historical_comparison: [],
+      history_boundary: ''
+    },
     reviewNotes: '',
     reviewedBy: '',
     reviewedAt: ''

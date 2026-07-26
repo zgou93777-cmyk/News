@@ -4,6 +4,15 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+const { officialEvidenceUrl } = require('./historical-source');
+
+const {
+  finalizeFramework,
+  loadFrameworkEvidence,
+  normalizeHistoricalFramework,
+  storeFrameworkVersion
+} = require('./historical-framework');
+
 const LIFECYCLE_STATUSES = new Set(['verified', 'not_applicable']);
 const EVIDENCE_STATUSES = new Set(['verified', 'not_found', 'not_applicable']);
 
@@ -27,24 +36,6 @@ function optionalDate(value, name) {
   return value;
 }
 
-function officialEvidenceUrl(value) {
-  let url;
-  try {
-    url = new URL(value);
-  } catch {
-    throw new Error(`invalid evidence URL: ${value}`);
-  }
-  if (url.protocol !== 'https:' || url.username || url.password || url.port) {
-    throw new Error(`evidence URL must use standard HTTPS: ${value}`);
-  }
-  const hostname = url.hostname.toLowerCase();
-  if (hostname !== 'gov.cn' && !hostname.endsWith('.gov.cn')) {
-    throw new Error(`evidence URL must be an official .gov.cn source: ${value}`);
-  }
-  url.hash = '';
-  return url.href;
-}
-
 function evidenceArray(value, name, status) {
   if (!Array.isArray(value)) throw new Error(`${name} must be an array`);
   const normalized = value.map((entry, index) => {
@@ -59,6 +50,47 @@ function evidenceArray(value, name, status) {
   });
   if (status === 'verified' && normalized.length === 0) throw new Error(`${name} requires evidence when status is verified`);
   return normalized;
+}
+
+function validateReviewFramework(item, value, analysis, implementationEvidence, outcomeEvidence) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('framework must be an object');
+  }
+  const sourceUrl = officialEvidenceUrl(item.source_url);
+  const sources = [{
+    id: `item:${item.id}`,
+    itemId: Number(item.id),
+    roles: ['current_policy'],
+    title: item.title,
+    issuer: item.issuer,
+    publishedAt: item.published_at,
+    sourceUrl,
+    checksum: item.checksum,
+    text: item.content_text || ''
+  }];
+  for (const [kind, rows] of [
+    ['implementation', implementationEvidence],
+    ['outcome', outcomeEvidence]
+  ]) rows.forEach((entry, index) => sources.push({
+    id: `review:${kind}:${index}`,
+    itemId: null,
+    roles: [`human_verified_${kind}`],
+    title: entry.title,
+    issuer: '',
+    publishedAt: entry.observedAt,
+    sourceUrl: entry.sourceUrl,
+    checksum: crypto.createHash('sha256').update(entry.evidenceQuote).digest('hex'),
+    text: entry.evidenceQuote
+  }));
+  const evidenceBundle = {
+    sources,
+    inputChecksum: item.checksum
+  };
+  const normalized = normalizeHistoricalFramework(value, evidenceBundle, analysis);
+  if (!normalized.framework.ready) {
+    throw new Error(`framework is incomplete or has unmatched source quotes: ${normalized.missing.join(', ')}`);
+  }
+  return value;
 }
 
 function validateHistoricalReview(item, input) {
@@ -119,6 +151,10 @@ function validateHistoricalReview(item, input) {
     quote: entry.evidenceQuote,
     observedAt: entry.observedAt
   }));
+  const framework = validateReviewFramework(
+    item, input.framework || analysis.framework, analysis,
+    implementationEvidence, outcomeEvidence
+  );
 
   const publishedAt = optionalDate(input.publishedAt || item.published_at, 'publishedAt');
   if (!publishedAt) throw new Error('publishedAt is required');
@@ -137,6 +173,7 @@ function validateHistoricalReview(item, input) {
     implementationEvidence,
     outcomeEvidence,
     analysis,
+    framework,
     reviewNotes: nonEmptyString(input.reviewNotes, 'reviewNotes'),
     reviewedBy: nonEmptyString(input.reviewedBy, 'reviewedBy'),
     reviewedAt: optionalDate(input.reviewedAt || new Date().toISOString(), 'reviewedAt')
@@ -241,7 +278,7 @@ function runHistoricalReview(db, options = {}) {
       db.prepare(`
         UPDATE historical_backfill_items SET
           title = ?, issuer = ?, document_number = ?, published_at = ?, effective_at = ?, repealed_at = ?,
-          stage = 'ready', source_status = 'verified', metadata_status = 'verified',
+          stage = 'lifecycle_verified', source_status = 'verified', metadata_status = 'verified',
           lifecycle_status = ?, implementation_status = ?, outcome_status = ?, analysis_status = 'verified',
           evidence_urls_json = ?, policy_cycle_json = ?, implementation_json = ?, outcome_json = ?, analysis_json = ?,
           review_notes = ?, reviewed_by = ?, reviewed_at = ?, last_error = '', next_attempt_at = NULL,
@@ -254,6 +291,19 @@ function runHistoricalReview(db, options = {}) {
         JSON.stringify(review.outcomeEvidence), JSON.stringify(persistedAnalysis), review.reviewNotes,
         review.reviewedBy, review.reviewedAt, id
       );
+      const updatedItem = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(id);
+      const evidenceBundle = loadFrameworkEvidence(db, updatedItem, storedAssessment);
+      const normalizedFramework = normalizeHistoricalFramework(
+        review.framework, evidenceBundle, JSON.parse(storedAssessment.analysis_json)
+      );
+      if (!normalizedFramework.framework.ready) {
+        throw new Error(`framework became invalid after normalization: ${normalizedFramework.missing.join(', ')}`);
+      }
+      const storedFramework = storeFrameworkVersion(
+        db, updatedItem, storedAssessment, evidenceBundle, normalizedFramework,
+        review.framework, `human-review:${review.reviewedBy}`
+      );
+      finalizeFramework(db, updatedItem, storedAssessment, storedFramework);
       db.exec('COMMIT');
     } catch (error) {
       db.exec('ROLLBACK');

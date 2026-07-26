@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 
 const { adaptiveBatchSize, currentLoadSnapshot } = require('./historical-backfill');
-const { officialEvidenceUrl } = require('./historical-review');
+const { officialEvidenceUrl } = require('./historical-source');
 const { checksumMatches } = require('./historical-verification');
 
 const REVIEW_STATUSES = new Set(['verified', 'partial', 'ambiguous', 'watching']);
@@ -74,10 +74,21 @@ function loadAnalysisInputs(db, item) {
     WHERE item_id = ?
     ORDER BY evidence_scope
   `).all(item.id);
+  const relations = db.prepare(`
+    SELECT relation.predecessor_item_id, relation.successor_item_id, relation.relation_type,
+      relation.status, evidence.evidence_quote, evidence.source_url, evidence.confidence,
+      predecessor.checksum AS predecessor_checksum, successor.checksum AS successor_checksum
+    FROM historical_policy_relations relation
+    JOIN historical_verification_evidence evidence ON evidence.id = relation.evidence_id
+    JOIN historical_backfill_items predecessor ON predecessor.id = relation.predecessor_item_id
+    JOIN historical_backfill_items successor ON successor.id = relation.successor_item_id
+    WHERE relation.predecessor_item_id = ? OR relation.successor_item_id = ?
+    ORDER BY relation.predecessor_item_id, relation.successor_item_id, relation.relation_type
+  `).all(item.id, item.id);
   const corpusWatermark = Number(db.prepare(`
     SELECT coalesce(max(id), 0) AS id FROM historical_backfill_items
   `).get().id);
-  return { verification, evidence, searches, corpusWatermark };
+  return { verification, evidence, searches, relations, corpusWatermark };
 }
 
 function inputChecksum(item, inputs) {
@@ -100,6 +111,7 @@ function inputChecksum(item, inputs) {
     verification: inputs.verification,
     evidence: inputs.evidence,
     searches: inputs.searches,
+    relations: inputs.relations,
     corpusWatermark: inputs.corpusWatermark
   };
   return crypto.createHash('sha256').update(JSON.stringify(snapshot), 'utf8').digest('hex');
@@ -364,7 +376,8 @@ function assessHistoricalPolicy(db, item, options = {}) {
     ...safeJson(item.evidence_urls_json, []),
     item.source_url,
     ...inputs.verification.filter((row) => row.status === 'verified').map((row) => row.source_url),
-    ...inputs.evidence.filter((row) => row.classification === 'accepted').map((row) => row.source_url)
+    ...inputs.evidence.filter((row) => row.classification === 'accepted').map((row) => row.source_url),
+    ...inputs.relations.filter((row) => row.status === 'verified').map((row) => row.source_url)
   ].filter((url) => officialUrl(url)).map(officialUrl))];
 
   db.exec('BEGIN IMMEDIATE');
@@ -398,14 +411,14 @@ function assessHistoricalPolicy(db, item, options = {}) {
         updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
       WHERE id = ?
     `).run(
-      releaseEligible ? 'ready' : item.stage,
+      item.stage,
       releaseEligible ? 'verified' : 'pending',
       JSON.stringify(persistedAnalysis),
       JSON.stringify(evidenceUrls),
       `自动证据核验分类为 ${reviewStatus}；仅描述公开证据链，不推断未公开事实或政策因果。`,
       METHODOLOGY,
       new Date().toISOString(),
-      releaseEligible ? '' : `analysis gates blocked: ${failed.join(', ')}`,
+      releaseEligible ? 'structured framework pending' : `analysis gates blocked: ${failed.join(', ')}`,
       item.id
     );
     db.exec('COMMIT');
@@ -447,7 +460,8 @@ async function runHistoricalAnalysisQueue(db, options = {}, dependencies = {}) {
   const items = analysisQueueItems(db, maximum);
   const result = {
     status: 'succeeded', selected: items.length, planned: Math.min(items.length, capacity),
-    processed: 0, ready: 0, blocked: 0, byStatus: { verified: 0, partial: 0, ambiguous: 0, watching: 0 },
+    processed: 0, ready: 0, awaitingFramework: 0, blocked: 0,
+    byStatus: { verified: 0, partial: 0, ambiguous: 0, watching: 0 },
     adaptiveLoad: Boolean(options.adaptiveLoad), load: initialLoad, stoppedDueToLoad: false,
     items: [], errors: []
   };
@@ -463,7 +477,7 @@ async function runHistoricalAnalysisQueue(db, options = {}, dependencies = {}) {
       const assessed = assessHistoricalPolicy(db, item, options);
       result.processed += 1;
       result.byStatus[assessed.reviewStatus] += 1;
-      if (assessed.releaseEligible) result.ready += 1;
+      if (assessed.releaseEligible) result.awaitingFramework += 1;
       else result.blocked += 1;
       result.items.push(assessed);
     } catch (error) {

@@ -9,8 +9,9 @@ const {
   loadAnalysisInputs,
   MINIMUM_CONFIDENCE
 } = require('./historical-analysis');
-const { officialEvidenceUrl } = require('./historical-review');
+const { officialEvidenceUrl } = require('./historical-source');
 const { checksumMatches } = require('./historical-verification');
+const { frameworkIsCurrent } = require('./historical-framework');
 const { buildAssessment } = require('./lineage');
 
 const RELEASE_METHODS = new Set(['historical-evidence-gates-v2', 'human-review-v1']);
@@ -156,6 +157,13 @@ function insertPublicAnalysis(db, documentId, item, analysis, assessment) {
   return { analysisId, version };
 }
 
+function insertPublicFramework(db, analysisId, framework) {
+  db.prepare(`
+    INSERT INTO analysis_frameworks (analysis_version_id, framework_json, method)
+    VALUES (?, ?, ?)
+  `).run(analysisId, framework.framework_json, framework.method);
+}
+
 function insertSignals(db, documentId, itemId) {
   const rows = db.prepare(`
     SELECT evidence_type, title, source_url, evidence_quote, observed_at, confidence
@@ -288,6 +296,8 @@ function currentAssessment(db, item) {
   const itemAnalysisPayload = { ...itemAnalysis };
   delete itemAnalysisPayload.assessmentVersionId;
   delete itemAnalysisPayload.assessmentVersion;
+  delete itemAnalysisPayload.frameworkVersionId;
+  delete itemAnalysisPayload.frameworkVersion;
   if (!analysis || Number(itemAnalysis.assessmentVersion) !== Number(assessment.version)
       || JSON.stringify(canonicalJson(itemAnalysisPayload)) !== JSON.stringify(canonicalJson(analysis))) {
     const error = new Error('ready item analysis does not match its immutable assessment version');
@@ -300,7 +310,20 @@ function currentAssessment(db, item) {
     error.code = 'STALE_ASSESSMENT';
     throw error;
   }
-  return { assessment, analysis };
+  const frameworkId = Number(itemAnalysis.frameworkVersionId);
+  const framework = Number.isSafeInteger(frameworkId) && frameworkId > 0
+    ? db.prepare(`
+        SELECT * FROM historical_analysis_frameworks
+        WHERE id = ? AND assessment_version_id = ?
+      `).get(frameworkId, assessment.id)
+    : null;
+  if (!framework || Number(itemAnalysis.frameworkVersion) !== Number(framework.version)
+      || !frameworkIsCurrent(db, item, assessment, framework)) {
+    const error = new Error('ready item has no current citation-checked structured framework');
+    error.code = 'STALE_ASSESSMENT';
+    throw error;
+  }
+  return { assessment, analysis, framework };
 }
 
 function requeueStaleAssessment(db, item, message) {
@@ -356,7 +379,7 @@ function releaseHistoricalItem(db, item) {
     if (!item || item.stage !== 'ready' || item.analysis_status !== 'verified') {
       throw new Error('historical item is no longer ready for release');
     }
-    const { assessment, analysis } = currentAssessment(db, item);
+    const { assessment, analysis, framework } = currentAssessment(db, item);
     const alreadyReleased = db.prepare(`
       SELECT * FROM historical_public_releases
       WHERE item_id = ? AND assessment_version_id = ?
@@ -370,6 +393,7 @@ function releaseHistoricalItem(db, item) {
     const familyId = resolveFamily(db, historicalFamily(item, category));
     const document = ensureDocument(db, item, analysis, sourceId, familyId, category);
     const publicAnalysis = insertPublicAnalysis(db, document.documentId, item, analysis, assessment);
+    insertPublicFramework(db, publicAnalysis.analysisId, framework);
     const signals = insertSignals(db, document.documentId, item.id);
     const ambiguities = insertAmbiguities(db, document.documentId, publicAnalysis.analysisId, analysis, item.reviewed_at);
     const lineage = insertEventsAndAssessment(db, familyId, document.documentId, item, analysis);

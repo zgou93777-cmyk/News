@@ -6,7 +6,7 @@ const { performance } = require('node:perf_hooks');
 const { currentLoadSnapshot } = require('./historical-backfill');
 const { MINIMUM_CONFIDENCE } = require('./historical-analysis');
 const { currentAssessment } = require('./historical-release');
-const { officialEvidenceUrl } = require('./historical-review');
+const { officialEvidenceUrl } = require('./historical-source');
 
 const REVIEW_STATUSES = new Set(['verified', 'partial', 'ambiguous', 'watching']);
 
@@ -43,7 +43,7 @@ function officialCitation(citation) {
 }
 
 function regressionEntry(db, item, ordinal) {
-  const { assessment, analysis } = currentAssessment(db, item);
+  const { assessment, analysis, framework } = currentAssessment(db, item);
   const gates = JSON.parse(assessment.gates_json);
   const citations = Array.isArray(analysis.citations) ? analysis.citations : [];
   const searchScopes = Array.isArray(analysis.searchScopes) ? analysis.searchScopes : [];
@@ -72,6 +72,8 @@ function regressionEntry(db, item, ordinal) {
       AND segmentation.item_id = ?
       AND json_extract(segmentation.segments_json, '$.reviewKind') = 'human_verified'
   `).get(item.id, item.checksum, item.parent_id));
+  const frameworkJson = JSON.parse(framework.framework_json);
+  const frameworkEvidence = JSON.parse(framework.evidence_json);
   const checks = {
     reviewStatus: REVIEW_STATUSES.has(assessment.review_status),
     confidence: Number(assessment.confidence) >= MINIMUM_CONFIDENCE,
@@ -81,6 +83,12 @@ function regressionEntry(db, item, ordinal) {
     searchScopes: automaticScopesPass,
     reviewSubmission: humanReviewPass,
     segmentationSubmission: segmentationPass,
+    structuredFramework: frameworkJson.ready === true
+      && frameworkEvidence.length > 0
+      && Boolean(frameworkJson.problem)
+      && Array.isArray(frameworkJson.tools) && frameworkJson.tools.length > 0
+      && Array.isArray(frameworkJson.affectedGroups) && frameworkJson.affectedGroups.length > 0
+      && Array.isArray(frameworkJson.executionPath) && frameworkJson.executionPath.length > 0,
     privateDocument: item.document_id === null && item.stage === 'ready'
   };
   return {

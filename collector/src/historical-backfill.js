@@ -433,6 +433,10 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
           AND source_status <> 'rejected' AND (parent_id IS NULL OR item_kind = 'issue')
       ) AS awaiting_pdf_ocr,
       count(*) FILTER (WHERE stage IN ('needs_review', 'source_verified', 'lifecycle_verified')) AS awaiting_verification,
+      count(*) FILTER (
+        WHERE stage = 'lifecycle_verified' AND analysis_status = 'verified'
+          AND CAST(json_extract(analysis_json, '$.assessmentVersionId') AS INTEGER) > 0
+      ) AS awaiting_framework,
       count(*) FILTER (WHERE stage = 'indexed') AS indexed_containers,
       count(*) FILTER (WHERE stage = 'ready') AS ready_for_release,
       count(*) FILTER (WHERE stage = 'published') AS published
@@ -593,6 +597,17 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
         )
       ) AS assessment_link_violations,
       count(*) FILTER (
+        WHERE item.stage IN ('ready', 'published') AND NOT EXISTS (
+          SELECT 1 FROM historical_analysis_frameworks framework
+          WHERE framework.id = CAST(json_extract(item.analysis_json, '$.frameworkVersionId') AS INTEGER)
+            AND framework.assessment_version_id = CAST(json_extract(item.analysis_json, '$.assessmentVersionId') AS INTEGER)
+            AND framework.version = CAST(json_extract(item.analysis_json, '$.frameworkVersion') AS INTEGER)
+            AND framework.source_checksum = item.checksum
+            AND json_extract(framework.framework_json, '$.ready') IS 1
+            AND json_array_length(framework.evidence_json) > 0
+        )
+      ) AS framework_link_violations,
+      count(*) FILTER (
         WHERE item.stage = 'published' AND NOT EXISTS (
           SELECT 1 FROM historical_public_releases release
           WHERE release.item_id = item.id AND release.document_id = item.document_id
@@ -617,6 +632,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
     + Number(orphanedParents)
     + Number(releaseIntegrity.evidence_source_violations)
     + Number(releaseIntegrity.assessment_link_violations)
+    + Number(releaseIntegrity.framework_link_violations)
     + Number(releaseIntegrity.public_release_violations)
     + Number(publicDocumentMismatches);
   const rollout = db.prepare(`
@@ -644,6 +660,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
       scheduledRetry: Number(recovery.scheduled_retry),
       awaitingPdfOcr: Number(recovery.awaiting_pdf_ocr),
       awaitingVerification: Number(recovery.awaiting_verification),
+      awaitingFramework: Number(recovery.awaiting_framework),
       indexedContainers: Number(recovery.indexed_containers),
       readyForRelease: Number(recovery.ready_for_release),
       published: Number(recovery.published)
@@ -681,6 +698,7 @@ function historicalQueueAudit(db, options = {}, dependencies = {}) {
       staleReadyAssessments: Number(releaseIntegrity.stale_ready_assessments),
       evidenceSourceViolations: Number(releaseIntegrity.evidence_source_violations),
       assessmentLinkViolations: Number(releaseIntegrity.assessment_link_violations),
+      frameworkLinkViolations: Number(releaseIntegrity.framework_link_violations),
       publicReleaseViolations: Number(releaseIntegrity.public_release_violations),
       publicDocumentMismatches: Number(publicDocumentMismatches),
       criticalFailures: criticalIntegrityFailures
