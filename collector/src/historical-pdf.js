@@ -658,7 +658,10 @@ function pdfQueueItems(db, maximum) {
     WHERE stage = 'manual_review' AND source_type = 'pdf'
       AND (parent_id IS NULL OR item_kind = 'issue')
       AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    ORDER BY coalesce(source_year, 9999), id
+    ORDER BY CASE last_error
+      WHEN 'legacy PDF segmentation requires v2 quality review' THEN 0
+      ELSE 1
+    END, coalesce(source_year, 9999), id
     LIMIT ?
   `).all(maximum);
 }

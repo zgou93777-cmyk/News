@@ -110,10 +110,16 @@ test('legacy v1 PDF candidates are requeued, rechecked and quarantined when v2 r
   const corrupted = `${corruptedTitle}\n一九五四年十月十六日全国人民代表大会常务委员会第一次会议通过\n${body}`;
   try {
     enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/shuju/1954/gwyb195400.pdf',
+      sourceName: 'Earlier queued issue', sourceType: 'pdf', itemKind: 'issue', sourceYear: 1954
+    });
+    const earlierId = Number(db.prepare('SELECT id FROM historical_backfill_items').get().id);
+    db.prepare("UPDATE historical_backfill_items SET stage = 'manual_review' WHERE id = ?").run(earlierId);
+    enqueueHistoricalItem(db, {
       url: 'https://www.gov.cn/gongbao/shuju/1954/gwyb195401.pdf',
       sourceName: 'State Council Gazette', sourceType: 'pdf', itemKind: 'issue', sourceYear: 1954
     });
-    const parentId = Number(db.prepare('SELECT id FROM historical_backfill_items').get().id);
+    const parentId = Number(db.prepare('SELECT max(id) AS id FROM historical_backfill_items').get().id);
     db.prepare("UPDATE historical_backfill_items SET stage = 'indexed' WHERE id = ?").run(parentId);
     db.prepare(`
       INSERT INTO historical_backfill_items (
@@ -140,6 +146,7 @@ test('legacy v1 PDF candidates are requeued, rechecked and quarantined when v2 r
     });
 
     assert.equal(result.legacyQueued, 1);
+    assert.equal(result.items[0].id, parentId);
     assert.equal(result.items[0].action, 'segmentation_review');
     assert.equal(result.items[0].quarantined, 1);
     const parent = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(parentId);
@@ -149,6 +156,7 @@ test('legacy v1 PDF candidates are requeued, rechecked and quarantined when v2 r
     assert.equal(child.source_status, 'rejected');
     assert.equal(child.metadata_status, 'rejected');
     assert.match(child.last_error, /segmentation rejected/);
+    db.prepare("UPDATE historical_backfill_items SET next_attempt_at = datetime('now', '+1 day') WHERE id = ?").run(earlierId);
     const repeated = await runHistoricalPdfQueue(db, { cacheDir, maxItems: 1, delayMs: 0 }, {
       loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
     });
