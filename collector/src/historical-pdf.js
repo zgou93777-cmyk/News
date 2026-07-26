@@ -395,17 +395,87 @@ function splitPdfIssueText(rawText, options = {}) {
   return segmentPdfIssueText(rawText, options).candidates;
 }
 
+function quarantinePdfChildren(db, itemId, reason) {
+  return Number(db.prepare(`
+    UPDATE historical_backfill_items SET
+      stage = 'manual_review', source_status = 'rejected', metadata_status = 'rejected',
+      lifecycle_status = 'rejected', implementation_status = 'rejected',
+      outcome_status = 'rejected', analysis_status = 'rejected',
+      last_error = ?, next_attempt_at = NULL,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE parent_id = ? AND document_id IS NULL AND stage <> 'published'
+  `).run(String(reason || 'parent PDF segmentation rejected').slice(0, 1000), itemId).changes);
+}
+
+function queueLegacyPdfSegmentations(db) {
+  const publicChildren = Number(db.prepare(`
+    SELECT count(*) AS count
+    FROM historical_backfill_items child
+    JOIN historical_backfill_items parent ON parent.id = child.parent_id
+    WHERE parent.source_type = 'pdf' AND parent.item_kind = 'issue'
+      AND child.document_id IS NOT NULL
+      AND EXISTS (
+        SELECT 1 FROM historical_artifacts artifact
+        WHERE artifact.item_id = parent.id AND artifact.artifact_type = 'segmentation'
+          AND artifact.engine = 'policy-heading-v1'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM historical_artifacts artifact
+        WHERE artifact.item_id = parent.id AND artifact.artifact_type = 'segmentation'
+          AND artifact.engine = 'policy-heading-v2'
+      )
+  `).get().count);
+  if (publicChildren > 0) throw new Error(`legacy PDF segmentation has ${publicChildren} public child rows`);
+  return Number(db.prepare(`
+    UPDATE historical_backfill_items SET
+      stage = 'manual_review', last_error = 'legacy PDF segmentation requires v2 quality review',
+      next_attempt_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE source_type = 'pdf' AND item_kind = 'issue' AND stage = 'indexed'
+      AND EXISTS (
+        SELECT 1 FROM historical_artifacts artifact
+        WHERE artifact.item_id = historical_backfill_items.id
+          AND artifact.artifact_type = 'segmentation' AND artifact.engine = 'policy-heading-v1'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM historical_artifacts artifact
+        WHERE artifact.item_id = historical_backfill_items.id
+          AND artifact.artifact_type = 'segmentation' AND artifact.engine = 'policy-heading-v2'
+      )
+  `).run().changes);
+}
+
 function insertPdfCandidates(db, item, candidates) {
   const insert = db.prepare(`
     INSERT INTO historical_backfill_items (
       parent_id, source_url, source_name, source_type, item_kind,
       source_year, issue_label, title, content_text, checksum, stage, fetched_at
     ) VALUES (?, ?, ?, 'pdf', 'document', ?, ?, ?, ?, ?, 'needs_review', strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    ON CONFLICT(source_url) DO NOTHING
+    ON CONFLICT(source_url) DO UPDATE SET
+      parent_id = excluded.parent_id,
+      source_name = excluded.source_name,
+      source_type = excluded.source_type,
+      item_kind = excluded.item_kind,
+      source_year = excluded.source_year,
+      issue_label = excluded.issue_label,
+      title = excluded.title,
+      content_text = excluded.content_text,
+      checksum = excluded.checksum,
+      stage = 'needs_review',
+      source_status = 'pending',
+      metadata_status = 'pending',
+      lifecycle_status = 'pending',
+      implementation_status = 'pending',
+      outcome_status = 'pending',
+      analysis_status = 'pending',
+      last_error = '',
+      next_attempt_at = NULL,
+      updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+    WHERE historical_backfill_items.document_id IS NULL
   `);
   let created = 0;
   db.exec('BEGIN IMMEDIATE');
   try {
+    const quarantined = quarantinePdfChildren(db, item.id, 'superseded by parent PDF re-segmentation');
     for (const candidate of candidates) {
       const baseUrl = String(item.source_url).split('#')[0];
       const sourceUrl = `${baseUrl}#candidate=${candidate.checksum.slice(0, 16)}&pages=${candidate.pageStart}-${candidate.pageEnd}`;
@@ -429,7 +499,7 @@ function insertPdfCandidates(db, item, candidates) {
       WHERE id = ?
     `).run(item.id);
     db.exec('COMMIT');
-    return created;
+    return { created, quarantined };
   } catch (error) {
     db.exec('ROLLBACK');
     throw error;
@@ -554,21 +624,28 @@ async function processPdfItem(db, item, options = {}, dependencies = {}) {
     }
   });
   if (segmentationResult.reviewReasons.length) {
+    const quarantined = quarantinePdfChildren(
+      db,
+      item.id,
+      `parent PDF segmentation rejected: ${segmentationResult.reviewReasons.join(', ')}`
+    );
     updatePdfCheckpoint(db, item, `automatic segmentation review: ${segmentationResult.reviewReasons.join(', ')}`, 24);
     return {
       id: item.id,
       action: 'segmentation_review',
       candidates: candidates.length,
       rejectedHeadings: segmentationResult.rejectedHeadings.length,
+      quarantined,
       remoteFetched: source.remoteFetched
     };
   }
-  const created = insertPdfCandidates(db, item, candidates);
+  const inserted = insertPdfCandidates(db, item, candidates);
   return {
     id: item.id,
     action: 'pdf_segmented',
     candidates: candidates.length,
-    created,
+    created: inserted.created,
+    quarantined: inserted.quarantined,
     extraction: extractionEngine,
     pageCount,
     remoteFetched: source.remoteFetched
@@ -579,6 +656,7 @@ function pdfQueueItems(db, maximum) {
   return db.prepare(`
     SELECT * FROM historical_backfill_items
     WHERE stage = 'manual_review' AND source_type = 'pdf'
+      AND (parent_id IS NULL OR item_kind = 'issue')
       AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     ORDER BY coalesce(source_year, 9999), id
     LIMIT ?
@@ -587,6 +665,7 @@ function pdfQueueItems(db, maximum) {
 
 async function runHistoricalPdfQueue(db, options = {}, dependencies = {}) {
   if (!options.cacheDir) throw new Error('historical PDF cache directory is required');
+  const legacyQueued = queueLegacyPdfSegmentations(db);
   const maximum = options.maxItems || 5;
   const minimum = Math.min(maximum, options.minItems || 1);
   const delayMs = options.delayMs ?? 5000;
@@ -598,6 +677,7 @@ async function runHistoricalPdfQueue(db, options = {}, dependencies = {}) {
   const items = pdfQueueItems(db, maximum);
   const result = {
     status: 'succeeded',
+    legacyQueued,
     selected: items.length,
     planned: Math.min(items.length, initialCapacity),
     processed: 0,
@@ -644,6 +724,7 @@ module.exports = {
   normalizePdfText,
   ocrPdfPages,
   processPdfItem,
+  queueLegacyPdfSegmentations,
   runHistoricalPdfQueue,
   segmentPdfIssueText,
   splitPdfIssueText

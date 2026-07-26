@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -95,6 +96,64 @@ test('PDF issue stays private when segmentation quality gates reject OCR heading
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
     const artifact = db.prepare("SELECT * FROM historical_artifacts WHERE artifact_type = 'segmentation'").get();
     assert.equal(JSON.parse(artifact.metadata_json).status, 'review_required');
+  } finally {
+    db.close();
+    fs.rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test('legacy v1 PDF candidates are requeued, rechecked and quarantined when v2 rejects them', async () => {
+  const db = openDatabase(':memory:');
+  const cacheDir = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-pdf-legacy-'));
+  const body = '本决定明确主管机关办理程序施行日期并保存正式记录。'.repeat(12);
+  const corruptedTitle = '关木同外国粲粟条粗的批准手精的决定';
+  const corrupted = `${corruptedTitle}\n一九五四年十月十六日全国人民代表大会常务委员会第一次会议通过\n${body}`;
+  try {
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/shuju/1954/gwyb195401.pdf',
+      sourceName: 'State Council Gazette', sourceType: 'pdf', itemKind: 'issue', sourceYear: 1954
+    });
+    const parentId = Number(db.prepare('SELECT id FROM historical_backfill_items').get().id);
+    db.prepare("UPDATE historical_backfill_items SET stage = 'indexed' WHERE id = ?").run(parentId);
+    db.prepare(`
+      INSERT INTO historical_backfill_items (
+        parent_id, source_url, source_name, source_type, item_kind, source_year,
+        title, content_text, checksum, stage
+      ) VALUES (?, ?, 'State Council Gazette', 'pdf', 'document', 1954, ?, ?, ?, 'needs_review')
+    `).run(
+      parentId,
+      'https://www.gov.cn/gongbao/shuju/1954/gwyb195401.pdf#candidate=legacy',
+      corruptedTitle,
+      corrupted,
+      crypto.createHash('sha256').update(corrupted).digest('hex')
+    );
+    db.prepare(`
+      INSERT INTO historical_artifacts (
+        item_id, artifact_type, storage_path, checksum, byte_size, page_start, page_end, engine
+      ) VALUES (?, 'segmentation', 'segments/legacy.json', ?, 2, 1, 1, 'policy-heading-v1')
+    `).run(parentId, 'b'.repeat(64));
+
+    const result = await runHistoricalPdfQueue(db, { cacheDir, maxItems: 1, delayMs: 0 }, {
+      fetchPdf: async (url) => ({ buffer: Buffer.from('%PDF-1.4 scan'), finalUrl: url }),
+      extractEmbeddedText: async () => corrupted,
+      loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
+    });
+
+    assert.equal(result.legacyQueued, 1);
+    assert.equal(result.items[0].action, 'segmentation_review');
+    assert.equal(result.items[0].quarantined, 1);
+    const parent = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(parentId);
+    assert.equal(parent.stage, 'manual_review');
+    const child = db.prepare('SELECT * FROM historical_backfill_items WHERE parent_id = ?').get(parentId);
+    assert.equal(child.stage, 'manual_review');
+    assert.equal(child.source_status, 'rejected');
+    assert.equal(child.metadata_status, 'rejected');
+    assert.match(child.last_error, /segmentation rejected/);
+    const repeated = await runHistoricalPdfQueue(db, { cacheDir, maxItems: 1, delayMs: 0 }, {
+      loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
+    });
+    assert.equal(repeated.legacyQueued, 0);
+    assert.equal(repeated.selected, 0);
   } finally {
     db.close();
     fs.rmSync(cacheDir, { recursive: true, force: true });
