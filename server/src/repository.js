@@ -114,6 +114,14 @@ function mapArticle(row) {
 
 function mapAnalysis(row) {
   if (!row) return null;
+  let framework = null;
+  if (row.framework_json) {
+    try {
+      framework = JSON.parse(row.framework_json);
+    } catch {
+      framework = null;
+    }
+  }
   return {
     id: row.id,
     documentId: row.document_id,
@@ -127,6 +135,8 @@ function mapAnalysis(row) {
     evidenceSummary: row.evidence_summary,
     modelName: row.model_name,
     promptVersion: row.prompt_version,
+    framework,
+    frameworkMethod: row.framework_method || '',
     status: row.status,
     createdAt: row.created_at
   };
@@ -410,9 +420,11 @@ function getArticleDetail(db, id) {
   }
 
   const analysisHistory = db.prepare(`
-    SELECT * FROM analysis_versions
-    WHERE document_id = ?
-    ORDER BY version DESC, id DESC
+    SELECT av.*, af.framework_json, af.method AS framework_method
+    FROM analysis_versions av
+    LEFT JOIN analysis_frameworks af ON af.analysis_version_id = av.id
+    WHERE av.document_id = ?
+    ORDER BY av.version DESC, av.id DESC
   `).all(id).map(mapAnalysis);
   const currentAnalysis = analysisHistory.find((item) => item.status === 'published') || analysisHistory[0] || null;
 
@@ -552,21 +564,15 @@ function getArticleDetail(db, id) {
       : latestAssessment?.score == null ? '待评估' : `${latestAssessment.score}/100`
   };
   article.analysisLead = currentAnalysis?.headline || article.summary;
+  article.analysisFramework = currentAnalysis?.framework || null;
   article.content = [
-    { heading: '政策原文', paragraphs: [article.contentText] },
-    ...(currentAnalysis ? [
-      { heading: '解释', paragraphs: [currentAnalysis.interpretation, currentAnalysis.impact] },
-      { heading: '建议', paragraphs: [currentAnalysis.recommendations] }
-    ] : [])
+    { heading: '政策原文', paragraphs: [article.contentText] }
   ];
   article.tags = [article.category, article.issuer, article.familyTitle].filter(Boolean);
   article.readTime = Math.max(3, Math.ceil((article.contentText.length + (currentAnalysis?.interpretation.length || 0)) / 450));
-  article.comparisons = historicalComparison.slice(0, 4).map((previous) => ({
-    dimension: '同脉络往期文件',
-    previous: `${previous.title}：${previous.analysisHeadline || previous.summary}`,
-    current: `${article.title}：${currentAnalysis?.headline || article.summary}`,
-    implication: '自动主题归档只确认两份文件属于同一政策脉络，不据此作因果比较；具体变化需核对两份原文及后续执行证据。'
-  }));
+  article.comparisons = Array.isArray(currentAnalysis?.framework?.historicalChanges)
+    ? currentAnalysis.framework.historicalChanges
+    : [];
   article.evidence = [
     {
       date: article.publishedAt,

@@ -37,6 +37,13 @@ function insertAnalysisIfMissing(db, documentId, analysis) {
   ).lastInsertRowid);
 }
 
+function insertFrameworkIfMissing(db, analysisVersionId, framework, method = 'editorial-framework-v1') {
+  db.prepare(`
+    INSERT OR IGNORE INTO analysis_frameworks (analysis_version_id, framework_json, method)
+    VALUES (?, ?, ?)
+  `).run(analysisVersionId, JSON.stringify(framework), method);
+}
+
 function seedDatabase(db) {
   return withTransaction(db, () => {
     const govSourceId = getOrInsert(
@@ -207,6 +214,113 @@ function seedDatabase(db) {
       methodology: '以官方原文为事实锚点；用同一政策家族的历史版本作纵向比较；将实施事件和统计信号与预测逐项挂接；保留首轮版本供复盘。',
       evidenceSummary: '国函〔2026〕66号、60万亿元目标和住房、休假相关原文已确认；网页明确“本文有删减”，具体财政规模仍不能外推。',
       createdAt: '2026-07-20T08:30:00+08:00'
+    });
+
+    const perspective = '公共政策执行与实际影响';
+    const perspectiveNote = '从政策公开目标出发，依次核对政策工具、执行责任、受影响对象和实际结果；不从宣传口径、行业立场或资产涨跌角度评价政策。';
+    insertFrameworkIfMissing(db, historicalAnalysisId, {
+      ready: true,
+      perspective,
+      perspectiveNote,
+      bottomLine: '这是一份到2035年的扩大内需总框架，作用是确定长期方向，不等于已经安排年度预算或具体补贴。',
+      problem: '内需体系仍存在居民消费能力、服务供给质量和城乡流通效率等结构性约束，需要用长期制度安排稳定消费基础。',
+      tools: [
+        { label: '提高消费能力', detail: '通过就业、收入分配和社会保障改善居民可支配能力，这部分传导较慢。' },
+        { label: '改善商品和服务供给', detail: '推动耐用品更新、服务消费和县域商业体系建设，降低供需错配。' },
+        { label: '优化消费环境', detail: '通过质量、信用、流通和监管制度降低交易成本。' }
+      ],
+      affectedGroups: [
+        { label: '居民家庭', detail: '长期影响取决于收入和公共服务是否同步改善，文件发布本身不会立即增加可支配收入。' },
+        { label: '消费与服务企业', detail: '获得长期政策方向，但具体机会仍取决于后续年度行动和地方规则。' },
+        { label: '地方政府', detail: '需要把纲要拆成预算、项目、服务供给和监管任务。' }
+      ],
+      executionPath: [
+        { label: '长期纲要', detail: '先确定目标、边界和政策方向。' },
+        { label: '年度与专项政策', detail: '再明确部门任务、财政工具和适用范围。' },
+        { label: '地方执行', detail: '形成项目、补贴、公共服务或监管动作。' },
+        { label: '结果复核', detail: '用收入、服务消费、耐用品更新和县域供给等指标验证。' }
+      ],
+      historicalChanges: [],
+      confirmed: [
+        '官方文件确立了扩大内需的中长期战略框架。',
+        '政策覆盖消费能力、供给质量、流通体系和消费环境，而不是单一促销工具。'
+      ],
+      unconfirmed: [
+        '单年度预算、补贴规模和地方任务不能由纲要直接推定。',
+        '长期目标是否兑现，需要等待后续政策和连续结果数据。'
+      ]
+    });
+    insertFrameworkIfMissing(db, actionAnalysisId, {
+      ready: true,
+      perspective,
+      perspectiveNote,
+      bottomLine: '政策从短期商品促销扩展到增收、保障和服务供给，但短期可见效果仍更可能来自以旧换新，结构性效果需要跨年度验证。',
+      problem: '居民消费意愿不仅受商品价格影响，还受收入预期、保障负担和服务供给不足约束，单一补贴难以形成可持续消费。',
+      tools: [
+        { label: '增收与减负', detail: '把就业、收入和社会保障放入提振消费工具箱。' },
+        { label: '以旧换新', detail: '用补贴和更新规则加快汽车、家电和数码产品需求释放。' },
+        { label: '扩大服务供给', detail: '推动文旅、养老、托育等服务消费，并配套标准和监管。' }
+      ],
+      affectedGroups: [
+        { label: '居民家庭', detail: '耐用品购买成本可能先下降，长期获得感取决于收入和公共服务。' },
+        { label: '商品企业', detail: '汽车、家电和数码链条较早受益，但需要区分新增需求与需求前置。' },
+        { label: '服务企业', detail: '政策窗口扩大，实际增长受地方供给、价格和监管能力制约。' }
+      ],
+      executionPath: [
+        { label: '中央专项行动', detail: '明确跨部门政策工具和重点任务。' },
+        { label: '部门与地方细则', detail: '确定补贴目录、申领流程、服务标准和监管要求。' },
+        { label: '资金核销与服务供给', detail: '形成实际补贴、交易或新增服务能力。' },
+        { label: '净效果评估', detail: '剔除需求前置、品类替代和价格变化后判断真实增量。' }
+      ],
+      historicalChanges: [
+        { dimension: '政策层级', previous: '2022年纲要提供到2035年的长期方向。', current: '2025年专项行动把长期方向拆成近期跨部门任务。', implication: '政策从战略框架进入可执行任务阶段。' },
+        { dimension: '政策工具', previous: '强调完整内需体系和长期制度建设。', current: '同时使用增收、保障、商品补贴和服务供给工具。', implication: '不再把提振消费等同于单一促销或补贴。' },
+        { dimension: '验证重点', previous: '重点观察长期消费结构。', current: '需要同时核验补贴核销、消费净增量和服务可及性。', implication: '短期交易额只能解释部分政策效果。' }
+      ],
+      confirmed: [
+        '专项行动已把增收、保障、商品和服务消费纳入同一任务框架。',
+        '以旧换新具有较明确的执行链路，是短期更容易观察的工具。'
+      ],
+      unconfirmed: [
+        '交易增长中有多少属于真实新增需求，仍需剔除需求前置和品类替代。',
+        '收入和服务供给工具是否形成持续效果，需要跨年度数据。'
+      ]
+    });
+    insertFrameworkIfMissing(db, currentAnalysisV2, {
+      ready: true,
+      perspective,
+      perspectiveNote,
+      bottomLine: '这份批复给扩大消费提供了到2030年的结果锚点和中期政策连续性，但它不是新增补贴清单；住房表述指向地方政策和公积金工具，不代表房产法律、统计或资产属性改变。',
+      problem: '消费增长既受居民收入和公共服务约束，也受商品、住房与服务供给结构影响，需要把短期刺激和中期制度安排连接起来。',
+      tools: [
+        { label: '结果目标', detail: '提出到2030年社会消费品零售总额达到60万亿元左右，用于约束中期执行进度。' },
+        { label: '商品与住房相关工具', detail: '延续耐用品更新，并通过因城施策、公积金改革和扩大使用范围满足住房消费需求。' },
+        { label: '服务与时间制度', detail: '继续推动养老、托育、文旅等服务供给，并涉及带薪休假和春秋假安排。' }
+      ],
+      affectedGroups: [
+        { label: '居民家庭', detail: '可能通过商品更新、公共服务、休假和地方住房政策受到影响；具体权益要以本地细则为准。' },
+        { label: '消费与服务企业', detail: '获得更长政策窗口，但不应把规划表述直接当作补贴额度或需求保证。' },
+        { label: '地方执行部门', detail: '需要把规划转化为年度任务、预算、房地产和公积金等具体规则。' }
+      ],
+      executionPath: [
+        { label: '国务院批复', detail: '确认国家级中期规划及2030年目标。' },
+        { label: '部门任务', detail: '发展改革、财政、商务、住建等部门形成年度或专项安排。' },
+        { label: '地方细则', detail: '各地明确申领、住房、公积金、休假或服务供给规则。' },
+        { label: '资金与结果', detail: '核验实际拨付、服务供给、居民负担和消费净增量。' }
+      ],
+      historicalChanges: [
+        { dimension: '时间框架', previous: '2022年纲要面向2035年，提供长期战略方向。', current: '本轮规划聚焦“十五五”并给出2030年社零总额约60万亿元目标。', implication: '长期方向增加了可按年度跟踪的中期结果锚点。' },
+        { dimension: '执行层级', previous: '2025年专项行动侧重近期跨部门任务。', current: '本轮规划把商品、服务、住房和休假等工具纳入中期连续部署。', implication: '部分短期工具获得延续，但仍需年度预算和细则才能执行。' },
+        { dimension: '住房表述', previous: '住房更多作为扩大内需相关领域出现。', current: '明确提出更好满足住房消费需求，并提到因城施策和公积金改革。', implication: '首先观察地方政策和公积金规则，不外推为全国统一资产定性。' }
+      ],
+      confirmed: [
+        '国函〔2026〕66号、成文和发布日期以及2030年60万亿元左右目标已由官方原文确认。',
+        '原文明确提到住房消费、因城施策、公积金改革、带薪年休假和春秋假。'
+      ],
+      unconfirmed: [
+        '政府网页注明“本文有删减”，不能推断未公开内容、具体财政规模和完整责任分工。',
+        '地方配套、实际拨付和居民消费能力改善尚未形成完整结果证据。'
+      ]
     });
 
     const signalInsert = db.prepare(`
