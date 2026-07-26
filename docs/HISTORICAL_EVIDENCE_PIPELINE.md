@@ -3,8 +3,13 @@
 ## Strong linkage
 
 A later official document is considered only when its full text contains the target
-policy's exact document number or exact title. Fuzzy topic similarity is not enough
-to attribute implementation or outcomes to a policy.
+policy's exact document number or exact title. Document-number whitespace and bracket
+variants are normalized, but fuzzy topic similarity is not enough to attribute
+implementation or outcomes to a policy.
+
+An action or result must appear in the same sentence as the target reference or in
+the immediately following sentence. Funding or statistics elsewhere in a document
+are not attributed to the target merely because the document cites it once.
 
 Each accepted or excluded candidate is retained in `historical_policy_evidence`.
 This makes false-positive controls auditable instead of silently discarding them.
@@ -37,9 +42,16 @@ Excluded candidates remain stored with the reason for exclusion.
 ## `not_found` boundary
 
 `not_found` is written only when the configured official archive scan and extraction
-window is complete and every matching candidate has a usable publication date. The
-exact corpus watermark, candidates checked, accepted matches, and search scope are
-stored in `historical_evidence_searches`. Otherwise the status remains `pending`.
+window is complete, the candidate query was not truncated, and every strong-link
+candidate has a verified official source, verified metadata, and usable publication
+date. The exact corpus watermark, candidates checked, accepted matches, and search
+scope are stored in `historical_evidence_searches`. Otherwise the status remains
+`pending`, including when accepted evidence already exists, so the worker retries
+after the corpus becomes complete.
+
+Before every scan, previously accepted automated evidence is withdrawn and rebuilt
+from the current verified corpus. A source later marked rejected therefore cannot
+leave stale implementation or outcome evidence behind.
 
 The worker updates only private queue evidence fields:
 

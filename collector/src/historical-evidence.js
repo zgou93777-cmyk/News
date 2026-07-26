@@ -2,7 +2,11 @@
 
 const { adaptiveBatchSize, currentLoadSnapshot } = require('./historical-backfill');
 const { officialEvidenceUrl } = require('./historical-review');
-const { archiveCoverageComplete, extractPublishedEvidence } = require('./historical-verification');
+const {
+  archiveCoverageComplete,
+  documentNumberKey,
+  extractDocumentNumbers
+} = require('./historical-verification');
 
 const MEETING_TITLE = /会议|座谈会|发布会|吹风会|例会|全会|讲话|记者会/u;
 const IMPLEMENTATION_TITLE = /实施细则|实施办法|操作细则|申报指南|任务清单|资金管理办法|配套办法/u;
@@ -20,13 +24,28 @@ function sentences(text) {
   return String(text || '').split(/(?<=[。！？])|\n/u).map(compact).filter(Boolean);
 }
 
-function sentenceWith(text, pattern) {
-  return sentences(text).find((sentence) => pattern.test(sentence)) || '';
+function sentenceReferencesTarget(sentence, target) {
+  const number = documentNumberKey(target.document_number);
+  if (number && extractDocumentNumbers(sentence)
+    .some((entry) => documentNumberKey(entry.value) === number)) return true;
+  const title = String(target.title || '').replace(/\s+/g, '');
+  return Boolean(title && String(sentence || '').replace(/\s+/g, '').includes(title));
 }
 
 function referenceSentence(candidate, target) {
-  const references = [target.document_number, target.title].filter(Boolean);
-  return sentences(candidate.content_text).find((sentence) => references.some((reference) => sentence.includes(reference))) || '';
+  return sentences(candidate.content_text).find((sentence) => sentenceReferencesTarget(sentence, target)) || '';
+}
+
+function linkedActionQuote(text, actionPattern, target) {
+  const rows = sentences(text);
+  for (let index = 0; index < rows.length; index += 1) {
+    if (!actionPattern.test(rows[index])) continue;
+    if (sentenceReferencesTarget(rows[index], target)) return rows[index];
+    if (index > 0 && sentenceReferencesTarget(rows[index - 1], target)) {
+      return `${rows[index - 1]} ${rows[index]}`.slice(0, 1000);
+    }
+  }
+  return '';
 }
 
 function plannedOnly(sentence) {
@@ -49,7 +68,7 @@ function classifyEvidenceCandidate(target, candidate) {
   }
 
   const results = [];
-  const fundingQuote = sentenceWith(content, FUNDING_ACTION);
+  const fundingQuote = linkedActionQuote(content, FUNDING_ACTION, target);
   if (fundingQuote && !plannedOnly(fundingQuote)) {
     results.push({
       evidenceType: 'funding', classification: 'accepted', quote: fundingQuote, confidence: 0.99,
@@ -63,7 +82,7 @@ function classifyEvidenceCandidate(target, candidate) {
 
   const implementationQuote = IMPLEMENTATION_TITLE.test(title)
     ? title
-    : sentenceWith(content, IMPLEMENTATION_ACTION);
+    : linkedActionQuote(content, IMPLEMENTATION_ACTION, target);
   if (implementationQuote && !plannedOnly(implementationQuote)
       && !results.some((entry) => entry.evidenceType === 'implementation' && entry.quote === implementationQuote)) {
     results.push({
@@ -77,7 +96,7 @@ function classifyEvidenceCandidate(target, candidate) {
     });
   }
 
-  const outcomeQuote = OUTCOME_TITLE.test(title) ? sentenceWith(content, OUTCOME_ACTION) : '';
+  const outcomeQuote = OUTCOME_TITLE.test(title) ? linkedActionQuote(content, OUTCOME_ACTION, target) : '';
   if (outcomeQuote && !plannedOnly(outcomeQuote)) {
     results.push({
       evidenceType: 'outcome', classification: 'accepted', quote: outcomeQuote, confidence: 0.95,
@@ -94,18 +113,55 @@ function classifyEvidenceCandidate(target, candidate) {
   return results;
 }
 
-function evidenceCandidates(db, item, maximum = 500) {
+function evidenceCandidateSearch(db, item, maximum = 500) {
   const number = String(item.document_number || '').trim();
   const title = String(item.title || '').trim();
-  if (!number && !title) return [];
-  return db.prepare(`
+  if (!number && !title) return { candidates: [], metadataIncomplete: false, truncated: false, matched: 0 };
+  const limit = Math.max(1, Number(maximum) || 500);
+  const canonicalNumber = documentNumberKey(number);
+  const compactTitle = title.replace(/\s+/g, '');
+  const normalizedText = `replace(replace(replace(replace(replace(replace(replace(replace(replace(replace(
+    content_text, ' ', ''), char(9), ''), char(10), ''), char(13), ''),
+    '[', '〔'), '(', '〔'), '（', '〔'), ']', '〕'), ')', '〕'), '）', '〕')`;
+  const rawRows = db.prepare(`
     SELECT * FROM historical_backfill_items
     WHERE id <> ? AND item_kind = 'document' AND trim(content_text) <> ''
+      AND source_status <> 'rejected'
+      AND metadata_status <> 'rejected'
       AND coalesce(source_year, 0) >= coalesce(?, 0)
-      AND ((? <> '' AND instr(content_text, ?) > 0) OR (? <> '' AND instr(content_text, ?) > 0))
+      AND ((? <> '' AND instr(${normalizedText}, ?) > 0)
+        OR (? <> '' AND instr(${normalizedText}, ?) > 0))
     ORDER BY coalesce(published_at, '9999'), id
     LIMIT ?
-  `).all(item.id, item.source_year, number, number, title, title, maximum);
+  `).all(
+    item.id,
+    item.source_year,
+    canonicalNumber,
+    canonicalNumber,
+    compactTitle,
+    compactTitle,
+    limit + 1
+  );
+  const truncated = rawRows.length > limit;
+  const rows = rawRows.slice(0, limit)
+    .filter((candidate) => referenceSentence(candidate, item));
+  const metadataIncomplete = rows.some((candidate) => candidate.source_status !== 'verified'
+    || candidate.metadata_status !== 'verified'
+    || !candidate.published_at
+    || !Number.isFinite(Date.parse(candidate.published_at)));
+  return {
+    candidates: rows.filter((candidate) => candidate.source_status === 'verified'
+      && candidate.metadata_status === 'verified'
+      && candidate.published_at
+      && Number.isFinite(Date.parse(candidate.published_at))),
+    metadataIncomplete,
+    truncated,
+    matched: rows.length
+  };
+}
+
+function evidenceCandidates(db, item, maximum = 500) {
+  return evidenceCandidateSearch(db, item, maximum).candidates;
 }
 
 function upsertPolicyEvidence(db, item, source, evidence, observedAt) {
@@ -114,7 +170,7 @@ function upsertPolicyEvidence(db, item, source, evidence, observedAt) {
     INSERT INTO historical_policy_evidence (
       item_id, source_item_id, evidence_type, classification, title, source_url,
       evidence_quote, observed_at, details_json, extractor, confidence
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'historical-evidence-v1', ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'historical-evidence-v2', ?)
     ON CONFLICT(item_id, source_item_id, evidence_type, evidence_quote) DO UPDATE SET
       classification = excluded.classification,
       title = excluded.title,
@@ -172,20 +228,21 @@ function publicEvidenceRows(db, itemId, types) {
 }
 
 function collectPolicyEvidence(db, item, options = {}) {
-  const candidates = evidenceCandidates(db, item, options.candidateLimit || 500);
+  const search = evidenceCandidateSearch(db, item, options.candidateLimit || 500);
+  const candidates = search.candidates;
   const targetDate = item.published_at ? Date.parse(item.published_at) : null;
-  let metadataIncomplete = false;
   let checked = 0;
   db.exec('BEGIN IMMEDIATE');
   try {
+    db.prepare(`
+      UPDATE historical_policy_evidence SET
+        classification = 'excluded',
+        details_json = '{"reason":"not confirmed by latest verified-corpus scan"}',
+        extractor = 'historical-evidence-v2'
+      WHERE item_id = ? AND classification = 'accepted'
+    `).run(item.id);
     for (const candidate of candidates) {
-      const observedAt = candidate.published_at
-        || extractPublishedEvidence(candidate, candidate.document_number)?.value
-        || null;
-      if (!observedAt) {
-        metadataIncomplete = true;
-        continue;
-      }
+      const observedAt = candidate.published_at;
       if (targetDate !== null && Date.parse(observedAt) < targetDate) continue;
       checked += 1;
       for (const evidence of classifyEvidenceCandidate(item, candidate)) {
@@ -196,12 +253,14 @@ function collectPolicyEvidence(db, item, options = {}) {
     const implementation = publicEvidenceRows(db, item.id, ['implementation', 'funding']);
     const outcome = publicEvidenceRows(db, item.id, ['outcome']);
     const coverage = archiveCoverageComplete(db, item.source_year, options);
-    const corpusComplete = coverage.complete && !metadataIncomplete;
+    const corpusComplete = coverage.complete && !search.metadataIncomplete && !search.truncated;
     const implementationStatus = implementation.length ? 'verified' : corpusComplete ? 'not_found' : 'pending';
     const outcomeStatus = outcome.length ? 'verified' : corpusComplete ? 'not_found' : 'pending';
     const watermark = Number(db.prepare('SELECT coalesce(max(id), 0) AS id FROM historical_backfill_items').get().id);
-    const searchScope = metadataIncomplete
-      ? 'candidate official documents still lack verified publication dates'
+    const searchScope = search.truncated
+      ? `candidate limit reached before all strong links were validated: first ${options.candidateLimit || 500} text matches scanned`
+      : search.metadataIncomplete
+      ? 'strong-link candidates remain excluded until source, metadata, and publication date are verified'
       : coverage.reason;
     upsertSearch(
       db, item.id, 'implementation', corpusComplete ? 'complete' : 'incomplete',
@@ -211,7 +270,7 @@ function collectPolicyEvidence(db, item, options = {}) {
       db, item.id, 'outcome', corpusComplete ? 'complete' : 'incomplete',
       watermark, checked, outcome.length, searchScope
     );
-    const complete = implementationStatus !== 'pending' && outcomeStatus !== 'pending';
+    const complete = corpusComplete && implementationStatus !== 'pending' && outcomeStatus !== 'pending';
     db.prepare(`
       UPDATE historical_backfill_items SET
         implementation_status = ?, outcome_status = ?, implementation_json = ?, outcome_json = ?,
@@ -252,7 +311,24 @@ function evidenceQueueItems(db, maximum) {
         OR EXISTS (
           SELECT 1 FROM historical_evidence_searches search
           WHERE search.item_id = historical_backfill_items.id
-            AND search.corpus_watermark < (SELECT coalesce(max(id), 0) FROM historical_backfill_items)
+            AND (
+              search.status = 'incomplete'
+              OR search.corpus_watermark < (SELECT coalesce(max(id), 0) FROM historical_backfill_items)
+            )
+        )
+        OR EXISTS (
+          SELECT 1
+          FROM historical_policy_evidence evidence
+          LEFT JOIN historical_backfill_items source ON source.id = evidence.source_item_id
+          WHERE evidence.item_id = historical_backfill_items.id
+            AND evidence.classification = 'accepted'
+            AND (
+              source.id IS NULL
+              OR source.source_status <> 'verified'
+              OR source.metadata_status <> 'verified'
+              OR source.published_at IS NULL
+              OR julianday(source.published_at) IS NULL
+            )
         )
       )
       AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
@@ -311,6 +387,7 @@ async function runHistoricalEvidenceQueue(db, options = {}, dependencies = {}) {
 module.exports = {
   classifyEvidenceCandidate,
   collectPolicyEvidence,
+  evidenceCandidateSearch,
   evidenceCandidates,
   runHistoricalEvidenceQueue
 };

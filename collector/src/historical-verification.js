@@ -702,6 +702,7 @@ module.exports = {
   archiveCoverageComplete,
   checksumMatches,
   dateMentions,
+  documentNumberKey,
   extractDocumentNumbers,
   extractEffectiveEvidence,
   extractExplicitEndEvidence,
