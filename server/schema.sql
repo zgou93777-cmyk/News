@@ -374,6 +374,38 @@ CREATE TABLE IF NOT EXISTS historical_evidence_searches (
 CREATE INDEX IF NOT EXISTS idx_historical_evidence_search_status
 ON historical_evidence_searches(status, evidence_scope, searched_at);
 
+CREATE TABLE IF NOT EXISTS historical_analysis_versions (
+  id INTEGER PRIMARY KEY,
+  item_id INTEGER NOT NULL REFERENCES historical_backfill_items(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL CHECK (version > 0),
+  input_checksum TEXT NOT NULL CHECK (length(input_checksum) = 64),
+  review_status TEXT NOT NULL CHECK (review_status IN ('verified', 'partial', 'ambiguous', 'watching')),
+  confidence REAL NOT NULL CHECK (confidence BETWEEN 0 AND 1),
+  release_eligible INTEGER NOT NULL DEFAULT 0 CHECK (release_eligible IN (0, 1)),
+  gates_json TEXT NOT NULL CHECK (json_valid(gates_json) AND json_type(gates_json) = 'array'),
+  analysis_json TEXT NOT NULL CHECK (json_valid(analysis_json) AND json_type(analysis_json) = 'object'),
+  methodology TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+  CHECK (trim(methodology) <> ''),
+  UNIQUE(item_id, version),
+  UNIQUE(item_id, input_checksum)
+) STRICT;
+
+CREATE INDEX IF NOT EXISTS idx_historical_analysis_release
+ON historical_analysis_versions(release_eligible, review_status, item_id, version DESC);
+
+CREATE TRIGGER IF NOT EXISTS historical_analysis_versions_immutable_update
+BEFORE UPDATE ON historical_analysis_versions
+BEGIN
+  SELECT RAISE(ABORT, 'historical analysis versions are immutable; insert a new version');
+END;
+
+CREATE TRIGGER IF NOT EXISTS historical_analysis_versions_immutable_delete
+BEFORE DELETE ON historical_analysis_versions
+BEGIN
+  SELECT RAISE(ABORT, 'historical analysis versions are immutable; deletion is not allowed');
+END;
+
 CREATE TRIGGER IF NOT EXISTS historical_backfill_ready_insert_guard
 BEFORE INSERT ON historical_backfill_items
 WHEN NEW.stage IN ('ready', 'published')
@@ -419,5 +451,5 @@ CREATE TABLE IF NOT EXISTS schema_meta (
   value TEXT NOT NULL
 ) STRICT;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '6')
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '7')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

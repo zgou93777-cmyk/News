@@ -82,6 +82,7 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   assert.throws(() => parseArguments(['--historical-pdf-process', '--ocr-page-budget', '201']), /1 to 200/);
   assert.equal(parseArguments(['--historical-verify', '--adaptive-load']).historicalVerify, true);
   assert.equal(parseArguments(['--historical-evidence', '--adaptive-load']).historicalEvidence, true);
+  assert.equal(parseArguments(['--historical-analyze', '--adaptive-load']).historicalAnalyze, true);
   assert.equal(parseArguments(['--historical-audit']).historicalAudit, true);
   assert.throws(
     () => parseArguments(['--historical-audit', '--historical-status']),

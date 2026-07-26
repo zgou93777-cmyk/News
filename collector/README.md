@@ -64,6 +64,9 @@ node src/cli.js --historical-verify --adaptive-load --min-items 5 --max-items 10
 # 在后续官方材料中检索实际实施、已拨付资金和结果数据
 node src/cli.js --historical-evidence --adaptive-load --min-items 5 --max-items 100
 
+# 对已闭合的证据链执行四状态分类和置信度门槛；通过后只进入私有 ready
+node src/cli.js --historical-analyze --adaptive-load --min-items 5 --max-items 100
+
 # 查看私有队列，不影响首页或公开 API
 node src/cli.js --historical-status
 

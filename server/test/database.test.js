@@ -23,7 +23,8 @@ const REQUIRED_TABLES = [
   'historical_verification_evidence',
   'historical_policy_relations',
   'historical_policy_evidence',
-  'historical_evidence_searches'
+  'historical_evidence_searches',
+  'historical_analysis_versions'
 ];
 
 test('historical backfill records are private and verification-gated', () => {
