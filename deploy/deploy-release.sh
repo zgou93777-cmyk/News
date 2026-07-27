@@ -31,7 +31,8 @@ cleanup() {
 recover_services() {
   if [[ $SERVICES_STOPPED -eq 1 ]]; then
     systemctl start policy-monitor.service || true
-    systemctl start policy-monitor-collector.timer policy-monitor-historical.timer || true
+    systemctl start policy-monitor-collector.timer policy-monitor-historical.timer \
+      policy-monitor-historical-ocr.timer || true
   fi
 }
 
@@ -74,8 +75,10 @@ fi
 
 install -d -m 0750 "$BACKUP_DIR"
 install -d -o policy-monitor -g policy-monitor -m 0750 "$DATA_DIR"
-systemctl stop policy-monitor-collector.timer policy-monitor-historical.timer
-systemctl stop policy-monitor-collector.service policy-monitor-historical.service policy-monitor.service || true
+systemctl stop policy-monitor-collector.timer policy-monitor-historical.timer \
+  policy-monitor-historical-ocr.timer || true
+systemctl stop policy-monitor-collector.service policy-monitor-historical.service \
+  policy-monitor-historical-ocr.service policy-monitor.service || true
 SERVICES_STOPPED=1
 
 if [[ -d "$APP_DIR" ]]; then
@@ -115,6 +118,8 @@ install -m 0644 "${APP_DIR}/collector/systemd/policy-monitor-collector.service" 
 install -m 0644 "${APP_DIR}/collector/systemd/policy-monitor-collector.timer" /etc/systemd/system/policy-monitor-collector.timer
 install -m 0644 "${APP_DIR}/collector/systemd/policy-monitor-historical.service" /etc/systemd/system/policy-monitor-historical.service
 install -m 0644 "${APP_DIR}/collector/systemd/policy-monitor-historical.timer" /etc/systemd/system/policy-monitor-historical.timer
+install -m 0644 "${APP_DIR}/collector/systemd/policy-monitor-historical-ocr.service" /etc/systemd/system/policy-monitor-historical-ocr.service
+install -m 0644 "${APP_DIR}/collector/systemd/policy-monitor-historical-ocr.timer" /etc/systemd/system/policy-monitor-historical-ocr.timer
 
 (
   cd "${APP_DIR}/server"
@@ -124,9 +129,11 @@ DB_PATH="$DB_PATH" "$NODE_BIN" --disable-warning=ExperimentalWarning \
   "${APP_DIR}/deploy/verify-production.js" --db-path "$DB_PATH" --check-ocr
 
 systemctl daemon-reload
-systemctl enable policy-monitor.service policy-monitor-collector.timer policy-monitor-historical.timer
+systemctl enable policy-monitor.service policy-monitor-collector.timer policy-monitor-historical.timer \
+  policy-monitor-historical-ocr.timer
 systemctl start policy-monitor.service
-systemctl start policy-monitor-collector.timer policy-monitor-historical.timer
+systemctl start policy-monitor-collector.timer policy-monitor-historical.timer \
+  policy-monitor-historical-ocr.timer
 SERVICES_STOPPED=0
 
 for _ in {1..20}; do
