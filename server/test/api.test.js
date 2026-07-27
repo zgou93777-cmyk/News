@@ -129,6 +129,68 @@ test('admin model configuration requires a token and never returns the API key',
   assert.doesNotMatch(JSON.stringify(current), /relay-secret-key/);
 });
 
+test('admin historical progress exposes cumulative stages and item details', async () => {
+  const unauthorized = await fetch(`${origin}/api/admin/historical-progress`);
+  assert.equal(unauthorized.status, 401);
+  const headers = { Authorization: `Bearer ${ADMIN_TOKEN}` };
+  db.exec('SAVEPOINT historical_progress_fixture');
+  try {
+    // The API is read-only; suspend release guards only inside this rolled-back
+    // fixture so every display stage can be represented without publishing data.
+    db.exec(`
+      DROP TRIGGER historical_backfill_ready_insert_guard;
+      DROP TRIGGER historical_backfill_ready_update_guard;
+    `);
+    const insert = db.prepare(`
+      INSERT INTO historical_backfill_items (
+        source_url, source_name, item_kind, source_year, title, content_text,
+        stage, source_status, metadata_status, lifecycle_status, analysis_status
+      ) VALUES (?, '国务院公报', 'document', ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run(
+      'https://www.gov.cn/gongbao/progress-discovered.htm', 1950, '等待抓取的政策', '',
+      'discovered', 'pending', 'pending', 'pending', 'pending'
+    );
+    const readyId = Number(insert.run(
+      'https://www.gov.cn/gongbao/progress-ready.htm', 1951, '首批预发布政策', '政策原文',
+      'ready', 'verified', 'verified', 'verified', 'verified'
+    ).lastInsertRowid);
+    insert.run(
+      'https://www.gov.cn/gongbao/progress-published.htm', 1952, '已经发布的政策', '政策原文',
+      'published', 'verified', 'verified', 'verified', 'verified'
+    );
+    db.prepare(`
+      INSERT INTO historical_analysis_versions (
+        item_id, version, input_checksum, review_status, confidence,
+        release_eligible, gates_json, analysis_json, methodology
+      ) VALUES (?, 1, ?, 'verified', 0.97, 1, '[{"name":"test","passed":true}]', '{}', 'historical-evidence-gates-v2')
+    `).run(readyId, 'a'.repeat(64));
+
+    const response = await fetch(`${origin}/api/admin/historical-progress?group=analyzed&pageSize=20`, { headers });
+    assert.equal(response.status, 200);
+    const progress = (await response.json()).data;
+    assert.equal(progress.summary.policyItems, 3);
+    assert.equal(progress.summary.discovered, 3);
+    assert.equal(progress.summary.fetched, 2);
+    assert.equal(progress.summary.analyzed, 1);
+    assert.equal(progress.summary.verified, 2);
+    assert.equal(progress.summary.ready, 1);
+    assert.equal(progress.summary.published, 1);
+    assert.equal(progress.selection.total, 1);
+    assert.equal(progress.selection.items[0].title, '首批预发布政策');
+    assert.equal(progress.selection.items[0].reviewStatus, 'verified');
+    assert.equal(progress.selection.items[0].releaseEligible, true);
+    assert.equal(progress.rollout.mode, 'disabled');
+
+    const searched = await fetch(`${origin}/api/admin/historical-progress?group=fetched&q=${encodeURIComponent('已经发布')}`, { headers });
+    assert.equal((await searched.json()).data.selection.total, 1);
+    const invalid = await fetch(`${origin}/api/admin/historical-progress?group=unknown`, { headers });
+    assert.equal(invalid.status, 400);
+  } finally {
+    db.exec('ROLLBACK TO historical_progress_fixture; RELEASE historical_progress_fixture');
+  }
+});
+
 test('article list supports search, filters and pagination', async () => {
   const response = await fetch(`${origin}/api/articles?q=${encodeURIComponent('住房')}&category=${encodeURIComponent('消费与内需')}&status=published&page=1&pageSize=1`);
   assert.equal(response.status, 200);
