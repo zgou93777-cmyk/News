@@ -129,6 +129,16 @@ test('HTML documents stop at needs_review and never become public articles', asy
       sourceYear: 2000,
       title: '测试政策'
     });
+    const itemId = db.prepare('SELECT id FROM historical_backfill_items').get().id;
+    db.prepare(`
+      INSERT INTO historical_verification_evidence (
+        item_id, source_item_id, claim_type, status, value_text, evidence_quote,
+        source_url, extractor, confidence
+      ) VALUES (?, ?, 'title', 'verified', ?, ?, ?, 'historical-metadata-v2', 0.95)
+    `).run(
+      itemId, itemId, '国务院关于测试政策的通知', 'h1: 国务院关于测试政策的通知',
+      'https://www.gov.cn/zhengce/2000-01/02/content_123.htm'
+    );
     const html = `<!doctype html><html><head>
       <meta name="firstpublishedtime" content="2000-01-02-10:00:00">
       <meta name="author" content="网站编辑">
@@ -154,6 +164,7 @@ test('HTML documents stop at needs_review and never become public articles', asy
     `).all(queued.id);
     assert.deepEqual(evidence.map((entry) => entry.claim_type), ['issuer', 'published_at', 'title']);
     assert.ok(evidence.every((entry) => entry.evidence_quote && entry.extractor.startsWith('official-')));
+    assert.equal(evidence.find((entry) => entry.claim_type === 'title').extractor, 'official-html-heading-v1');
 
     const verification = verifySourceMetadata(db, queued);
     assert.equal(verification.complete, true);

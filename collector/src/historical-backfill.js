@@ -318,6 +318,12 @@ function persistDocumentMetadataEvidence(db, item, document) {
       item_id, source_item_id, claim_type, status, value_text, evidence_quote,
       source_url, search_scope, extractor, confidence, observed_at
     ) VALUES (?, ?, ?, 'verified', ?, ?, ?, '', ?, ?, ?)
+    ON CONFLICT(item_id, claim_type, status, value_text, source_url, evidence_quote) DO UPDATE SET
+      source_item_id = excluded.source_item_id,
+      search_scope = excluded.search_scope,
+      extractor = excluded.extractor,
+      confidence = excluded.confidence,
+      observed_at = excluded.observed_at
   `);
   for (const [documentKey, claimType] of [
     ['title', 'title'],
