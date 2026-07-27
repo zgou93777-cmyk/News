@@ -35,6 +35,22 @@ test('extractDocument reads official metadata and keeps quoted policy text', () 
   assert.doesNotMatch(document.contentText, /secretNoise|导航内容|成文日期/);
 });
 
+test('extractDocument prefers the State Council first-published metadata over page modification time', () => {
+  const html = `<!doctype html><html><head>
+    <meta name="ArticleTitle" content="Historical policy notice">
+    <meta name="source" content="State Council Gazette">
+    <meta name="firstpublishedtime" content="2024-12-20-16:00:00">
+    <meta name="lastmodifiedtime" content="2024-12-25 13:17:51">
+  </head><body><div id="UCAP-CONTENT">
+    <p>This official policy text is long enough for deterministic extraction.</p>
+  </div></body></html>`;
+  const document = extractDocument(html, {
+    contentType: 'text/html; charset=utf-8',
+    url: 'https://www.gov.cn/gongbao/2024/issue/example.html'
+  });
+  assert.equal(document.publishedAt, '2024-12-20T00:00:00+08:00');
+});
+
 test('discoverDocumentLinks ranks policy-looking links and resolves relative URLs', () => {
   const html = `
     <a href="/zhengce/content/202607/content_123.htm">国务院关于某规划的批复</a>

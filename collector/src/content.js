@@ -123,7 +123,15 @@ function extractPublishedAt(meta, text, override) {
     const labelled = text.match(new RegExp(`${label}\\s*[：:]?\\s*((?:20\\d{2})\\s*(?:年|[-/.])\\s*\\d{1,2}\\s*(?:月|[-/.])\\s*\\d{1,2}\\s*日?)`));
     if (labelled) return normalizePublishedAt(labelled[1]);
   }
-  for (const key of ['pubdate', 'publishdate', 'article:published_time', 'date', 'created']) {
+  for (const key of [
+    'pubdate',
+    'publishdate',
+    'firstpublishedtime',
+    'article:published_time',
+    'date',
+    'created',
+    'lastmodifiedtime'
+  ]) {
     const normalized = normalizePublishedAt(meta.get(key));
     if (normalized) return normalized;
   }
