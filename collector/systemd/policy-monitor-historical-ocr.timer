@@ -1,0 +1,11 @@
+[Unit]
+Description=Continuously drain historical PDF OCR work under adaptive load
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=2min
+AccuracySec=30s
+Unit=policy-monitor-historical-ocr.service
+
+[Install]
+WantedBy=timers.target
