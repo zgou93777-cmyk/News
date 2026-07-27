@@ -46,9 +46,37 @@ test('extractDocument prefers the State Council first-published metadata over pa
   </div></body></html>`;
   const document = extractDocument(html, {
     contentType: 'text/html; charset=utf-8',
-    url: 'https://www.gov.cn/gongbao/2024/issue/example.html'
+    url: 'https://www.gov.cn/gongbao/2024/issue/example.html',
+    source: { institution: '国务院' }
   });
   assert.equal(document.publishedAt, '2024-12-20T00:00:00+08:00');
+  assert.equal(document.metadataEvidence.publishedAt.extractor, 'official-html-meta-v1');
+});
+
+test('State Council Gazette pages use the body heading and issuing body instead of editor metadata', () => {
+  const html = `<!doctype html><html><head>
+    <meta name="firstpublishedtime" content="2024-10-10-16:00:00">
+    <meta name="ArticleTitle" content="国家烟草局关于修订印发电子烟物流管理细则的通知 电子烟物流管理细则">
+    <meta name="author" content="马娟">
+    <meta name="source" content="国务院公报">
+    <title>国家烟草局关于修订印发电子烟物流管理细则的通知　　电子烟物流管理细则__2024年第28号国务院公报_中国政府网</title>
+  </head><body><div id="UCAP-CONTENT">
+    <p>国家烟草局关于修订印发电子烟物流管理细则的通知</p>
+    <p>电子烟物流管理细则</p>
+    <p>第一条 为加强电子烟物流管理，规范相关经营活动，制定本细则。</p>
+    <p>国家烟草局</p>
+  </div></body></html>`;
+  const document = extractDocument(html, {
+    contentType: 'text/html; charset=utf-8',
+    url: 'https://www.gov.cn/gongbao/2024/issue_11626/202410/content_6978629.html'
+  });
+  assert.equal(document.title, '国家烟草局关于修订印发电子烟物流管理细则的通知');
+  assert.equal(document.issuer, '国家烟草局');
+  assert.notEqual(document.issuer, '马娟');
+  assert.equal(document.publishedAt, '2024-10-10T00:00:00+08:00');
+  assert.equal(document.metadataEvidence.title.extractor, 'official-content-heading-v1');
+  assert.match(document.metadataEvidence.issuer.extractor, /^official-content-/);
+  assert.match(document.metadataEvidence.publishedAt.quote, /^firstpublishedtime:/);
 });
 
 test('discoverDocumentLinks ranks policy-looking links and resolves relative URLs', () => {

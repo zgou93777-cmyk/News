@@ -14,6 +14,7 @@ const {
   runHistoricalQueue
 } = require('../src/historical-backfill');
 const { validateHistoricalReview } = require('../src/historical-review');
+const { verifySourceMetadata } = require('../src/historical-verification');
 
 test('historical discovery keeps official links and preserves honest years', () => {
   const raw = JSON.stringify({
@@ -128,11 +129,14 @@ test('HTML documents stop at needs_review and never become public articles', asy
       sourceYear: 2000,
       title: '测试政策'
     });
-    const html = `<!doctype html><html><head><title>国务院关于测试政策的通知</title></head><body>
-      <h1>国务院关于测试政策的通知</h1><p>2000年1月2日</p>
-      <p>为验证历史政策核验队列，本文件正文包含足够长度的政策内容，但不会自动公开。</p>
+    const html = `<!doctype html><html><head>
+      <meta name="firstpublishedtime" content="2000-01-02-10:00:00">
+      <meta name="author" content="网站编辑">
+      <title>国务院关于测试政策的通知__2000年第1号国务院公报_中国政府网</title>
+      </head><body><h1>国务院关于测试政策的通知</h1>
+      <div id="UCAP-CONTENT"><p>为验证历史政策核验队列，本文件正文包含足够长度的政策内容，但不会自动公开。</p>
       <p>各地区、各部门应结合实际认真贯彻执行，并持续公开实施情况和结果证据。</p>
-    </body></html>`;
+      </div></body></html>`;
     const result = await runHistoricalQueue(db, { maxItems: 1, delayMs: 0 }, {
       fetchText: async () => ({ body: html, contentType: 'text/html; charset=utf-8', finalUrl: 'https://www.gov.cn/zhengce/2000-01/02/content_123.htm' })
     });
@@ -144,6 +148,18 @@ test('HTML documents stop at needs_review and never become public articles', asy
     assert.equal(queued.lifecycle_status, 'pending');
     assert.equal(queued.analysis_status, 'pending');
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
+    const evidence = db.prepare(`
+      SELECT claim_type, value_text, evidence_quote, extractor
+      FROM historical_verification_evidence WHERE item_id = ? ORDER BY claim_type
+    `).all(queued.id);
+    assert.deepEqual(evidence.map((entry) => entry.claim_type), ['issuer', 'published_at', 'title']);
+    assert.ok(evidence.every((entry) => entry.evidence_quote && entry.extractor.startsWith('official-')));
+
+    const verification = verifySourceMetadata(db, queued);
+    assert.equal(verification.complete, true);
+    const verified = db.prepare('SELECT stage, metadata_status FROM historical_backfill_items WHERE id = ?').get(queued.id);
+    assert.equal(verified.stage, 'source_verified');
+    assert.equal(verified.metadata_status, 'verified');
   } finally {
     db.close();
   }

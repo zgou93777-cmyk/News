@@ -6,6 +6,7 @@ const path = require('node:path');
 
 const { checksumFor } = require('./analysis');
 const { decodeEntities, extractDocument, fetchText } = require('./content');
+const { officialEvidenceUrl } = require('./historical-source');
 
 const DEFAULT_CONFIG_PATH = path.resolve(__dirname, '..', '..', 'config', 'historical-sources.json');
 const PROCESSABLE_STAGES = Object.freeze(['discovered', 'failed']);
@@ -293,6 +294,46 @@ function markManualPdf(db, item, contentType) {
   `).run(`公报 PDF（${contentType || 'application/pdf'}）需先做版面保真的文本提取或 OCR，再按单篇政策拆分并人工校对。`, item.id);
 }
 
+function persistDocumentMetadataEvidence(db, item, document) {
+  const sourceUrl = officialEvidenceUrl(item.source_url);
+  officialEvidenceUrl(document.originalUrl);
+  const extractors = [
+    'official-html-meta-v1',
+    'official-page-label-v1',
+    'official-html-heading-v1',
+    'official-content-heading-v1',
+    'official-html-title-v1',
+    'official-content-signature-v1',
+    'official-content-title-v1'
+  ];
+  const extractorPlaceholders = extractors.map(() => '?').join(', ');
+  db.prepare(`
+    DELETE FROM historical_verification_evidence
+    WHERE item_id = ? AND source_item_id = ?
+      AND claim_type IN ('title', 'issuer', 'published_at')
+      AND extractor IN (${extractorPlaceholders})
+  `).run(item.id, item.id, ...extractors);
+  const insert = db.prepare(`
+    INSERT INTO historical_verification_evidence (
+      item_id, source_item_id, claim_type, status, value_text, evidence_quote,
+      source_url, search_scope, extractor, confidence, observed_at
+    ) VALUES (?, ?, ?, 'verified', ?, ?, ?, '', ?, ?, ?)
+  `);
+  for (const [documentKey, claimType] of [
+    ['title', 'title'],
+    ['issuer', 'issuer'],
+    ['publishedAt', 'published_at']
+  ]) {
+    const evidence = document.metadataEvidence?.[documentKey];
+    const value = String(document[documentKey] || '').trim();
+    if (!evidence || String(evidence.value || '').trim() !== value || !String(evidence.quote || '').trim()) continue;
+    insert.run(
+      item.id, item.id, claimType, value, String(evidence.quote).trim(), sourceUrl,
+      evidence.extractor, Number(evidence.confidence), claimType === 'published_at' ? value : null
+    );
+  }
+}
+
 async function processQueueItem(db, item, options, dependencies) {
   if (item.source_type === 'pdf') {
     if (!options.dryRun) markManualPdf(db, item, 'application/pdf');
@@ -346,14 +387,22 @@ async function processQueueItem(db, item, options, dependencies) {
   });
   const checksum = checksumFor(document);
   if (!options.dryRun) {
-    db.prepare(`
-      UPDATE historical_backfill_items SET
-        title = ?, issuer = ?, published_at = ?, content_text = ?, checksum = ?,
-        stage = 'needs_review', attempts = attempts + 1,
-        fetched_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = '', next_attempt_at = NULL,
-        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-      WHERE id = ?
-    `).run(document.title, document.issuer, document.publishedAt, document.contentText, checksum, item.id);
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      db.prepare(`
+        UPDATE historical_backfill_items SET
+          title = ?, issuer = ?, published_at = ?, content_text = ?, checksum = ?,
+          stage = 'needs_review', attempts = attempts + 1,
+          fetched_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), last_error = '', next_attempt_at = NULL,
+          updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        WHERE id = ?
+      `).run(document.title, document.issuer, document.publishedAt, document.contentText, checksum, item.id);
+      persistDocumentMetadataEvidence(db, item, document);
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
   }
   return { id: item.id, action: 'extracted_for_review', title: document.title, url: item.source_url };
 }

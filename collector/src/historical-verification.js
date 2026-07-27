@@ -3,6 +3,7 @@
 const crypto = require('node:crypto');
 
 const { adaptiveBatchSize, currentLoadSnapshot, loadHistoricalSources } = require('./historical-backfill');
+const { extractIssuerCandidate } = require('./content');
 const { officialEvidenceUrl } = require('./historical-source');
 
 const DOCUMENT_NUMBER_PATTERNS = [
@@ -128,6 +129,13 @@ function extractIssuerEvidence(item) {
       return { value: existing, quote, confidence: 1 };
     }
   }
+  const extracted = extractIssuerCandidate(text, item.title);
+  if (extracted) return {
+    value: extracted.value,
+    quote: extracted.quote,
+    confidence: extracted.confidence,
+    extractor: extracted.extractor
+  };
   for (const issuer of KNOWN_ISSUERS) {
     const titleIndex = title.indexOf(issuer);
     if (titleIndex >= 0 && titleIndex <= 2) {
@@ -261,8 +269,44 @@ function metadataEvidence(item) {
   return { sourceUrl, title, documentNumber, issuer, published, effective };
 }
 
+function storedMetadataEvidence(db, item, sourceUrl) {
+  const expected = {
+    title: String(item.title || '').trim(),
+    issuer: String(item.issuer || '').trim(),
+    published_at: String(item.published_at || '').trim()
+  };
+  const result = {};
+  const rows = db.prepare(`
+    SELECT claim_type, value_text, evidence_quote, extractor, confidence, observed_at
+    FROM historical_verification_evidence
+    WHERE item_id = ? AND source_item_id = ? AND status = 'verified'
+      AND source_url = ? AND claim_type IN ('title', 'issuer', 'published_at')
+    ORDER BY confidence DESC, id DESC
+  `).all(item.id, item.id, sourceUrl);
+  for (const row of rows) {
+    if (result[row.claim_type] || Number(row.confidence) < 0.95) continue;
+    if (!expected[row.claim_type] || row.value_text !== expected[row.claim_type] || !row.evidence_quote.trim()) continue;
+    if (row.claim_type === 'published_at' && row.observed_at !== row.value_text) continue;
+    result[row.claim_type] = {
+      value: row.value_text,
+      quote: row.evidence_quote,
+      confidence: Number(row.confidence),
+      extractor: row.extractor
+    };
+  }
+  return {
+    title: result.title || null,
+    issuer: result.issuer || null,
+    published: result.published_at || null
+  };
+}
+
 function verifySourceMetadata(db, item) {
   const extracted = metadataEvidence(item);
+  const stored = storedMetadataEvidence(db, item, extracted.sourceUrl);
+  for (const claimType of ['title', 'issuer', 'published']) {
+    if (!extracted[claimType]) extracted[claimType] = stored[claimType];
+  }
   const missing = [];
   if (!extracted.title) missing.push('title');
   if (!extracted.issuer) missing.push('issuer');
@@ -290,7 +334,8 @@ function verifySourceMetadata(db, item) {
         value: evidence.value,
         quote: evidence.quote,
         sourceUrl: extracted.sourceUrl,
-        confidence: evidence.confidence
+        confidence: evidence.confidence,
+        extractor: evidence.extractor
       });
     }
     if (extracted.documentNumber) {
@@ -323,7 +368,8 @@ function verifySourceMetadata(db, item) {
       quote: extracted.published.quote,
       sourceUrl: extracted.sourceUrl,
       confidence: extracted.published.confidence,
-      observedAt: extracted.published.value
+      observedAt: extracted.published.value,
+      extractor: extracted.published.extractor
     });
     if (extracted.effective) upsertEvidence(db, {
       itemId: item.id,

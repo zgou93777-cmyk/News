@@ -139,11 +139,42 @@ function extractPublishedAt(meta, text, override) {
   return normalizePublishedAt(generic?.[1]);
 }
 
+function publicationMetadataEvidence(meta, text, override, publishedAt) {
+  if (!publishedAt || override) return null;
+  for (const label of ['发布日期', '发布时间', '发布于', '发文日期']) {
+    const match = text.match(new RegExp(label + '\\s*[：:]?\\s*((?:20\\d{2})\\s*(?:年|[-/.])\\s*\\d{1,2}\\s*(?:月|[-/.])\\s*\\d{1,2}\\s*日?)'));
+    if (match && normalizePublishedAt(match[1]) === publishedAt) {
+      return {
+        value: publishedAt,
+        quote: label + '：' + match[1].replace(/\s+/g, ''),
+        extractor: 'official-page-label-v1',
+        confidence: 1
+      };
+    }
+  }
+  for (const key of ['pubdate', 'publishdate', 'firstpublishedtime', 'article:published_time', 'date', 'created']) {
+    const raw = meta.get(key);
+    if (raw && normalizePublishedAt(raw) === publishedAt) {
+      return {
+        value: publishedAt,
+        quote: key + ': ' + raw,
+        extractor: 'official-html-meta-v1',
+        confidence: key === 'firstpublishedtime' ? 1 : 0.98
+      };
+    }
+  }
+  return null;
+}
+
 function cleanSiteTitle(value, sourceUrl) {
   let title = String(value || '').trim();
   try {
     if (new URL(sourceUrl).hostname === 'www.gov.cn') {
-      title = title.replace(/(?:_[^_]{1,16})?_中国政府网$/, '');
+      title = title
+        .replace(/(?:_{1,2}\d{4}年第\d+号(?:中华人民共和国)?国务院公报)?_中国政府网$/u, '')
+        .replace(/(?:_[^_]{1,16})?_中国政府网$/u, '')
+        .replace(/_(?:中华人民共和国)?国务院公报$/u, '')
+        .replace(/_+$/u, '');
     }
   } catch {
     // A URL validity error is reported later with the original URL field.
@@ -165,12 +196,80 @@ function summarize(text, maximum = 180) {
   return result.length > maximum ? `${result.slice(0, maximum - 3)}...` : result;
 }
 
-function extractIssuer(pageText) {
-  for (const label of ['发文机关', '发布机构', '来源']) {
-    const match = pageText.match(new RegExp(`${label}\\s*[：:]\\s*([^\\n]{2,120})`));
-    if (match?.[1] && isPlausibleIssuer(match[1])) return match[1].trim();
+const TITLE_TERMINATOR = /(?:通知|意见|决定|批复|公告|通告|命令|条例|办法|规定|细则|方案|规划|纲要|报告|讲话|贺电|复函|函)$/u;
+const ISSUING_BODY_SUFFIX = /(?:中共中央|国务院|人民政府|办公厅|委员会|常委会|管理局|总局|局|部|署|院|办|银行|法院|检察院|人大|政协|军委|委|会)$/u;
+
+function leadingDocumentTitle(text) {
+  const lines = String(text || '').split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 10);
+  let combined = '';
+  for (const line of lines) {
+    if (combined && (/(?:〔|\[|（|\()\s*(?:19|20)?\d{2}[^\n]{0,24}号/u.test(line)
+        || /^(?:各|致)[^。；]{1,80}[：:]$/u.test(line)
+        || /^(?:19|20)\d{2}年\d{1,2}月\d{1,2}日$/u.test(line))) break;
+    if (line.length > 180) break;
+    combined += line;
+    if (combined.length <= 300 && TITLE_TERMINATOR.test(combined)) return combined;
   }
-  return '';
+  return lines.find((line) => line.length >= 4 && line.length <= 160) || '';
+}
+
+function isPlausibleIssuingBody(value) {
+  const issuer = String(value || '').replace(/\s+/g, '').trim();
+  return isPlausibleIssuer(issuer)
+    && ISSUING_BODY_SUFFIX.test(issuer)
+    && !/(?:公报|政府网|网站|新闻网|客户端|编辑部)$/u.test(issuer)
+    && !/(?:具体工作|相关工作|由|负责|执行|依照|按照)/u.test(issuer);
+}
+
+function issuerFromTitle(title) {
+  const compact = String(title || '').replace(/\s+/g, '');
+  const match = compact.match(/^([\p{Script=Han}·]{2,80}?(?:中共中央|国务院|人民政府|办公厅|委员会|常委会|管理局|总局|局|部|署|院|办|银行|法院|检察院|人大|政协|军委|委|会))(?=关于|致|印发|发布|公布|公告)/u);
+  return match?.[1] && isPlausibleIssuingBody(match[1]) ? match[1] : '';
+}
+
+function extractIssuerCandidate(pageText, title = '') {
+  for (const label of ['发文机关', '发布机构', '来源']) {
+    const match = pageText.match(new RegExp(label + '\\s*[：:]\\s*([^\\n]{2,120})'));
+    if (match?.[1] && isPlausibleIssuingBody(match[1])) {
+      const value = match[1].replace(/\s+/g, ' ').trim();
+      return { value, quote: label + '：' + value, extractor: 'official-page-label-v1', confidence: 1 };
+    }
+  }
+  const titleIssuer = issuerFromTitle(title);
+  const lines = String(pageText || '').split('\n')
+    .map((line) => line.replace(/\s+/g, '').trim())
+    .filter(Boolean);
+  const edgeLines = [...lines.slice(0, 24), ...lines.slice(-16)];
+  if (titleIssuer) {
+    const signature = edgeLines.find((line) => line === titleIssuer);
+    return {
+      value: titleIssuer,
+      quote: signature || String(title).replace(/\s+/g, ' ').trim(),
+      extractor: signature ? 'official-content-signature-v1' : 'official-content-title-v1',
+      confidence: signature ? 1 : 0.98
+    };
+  }
+  const signature = edgeLines.reverse().find(isPlausibleIssuingBody);
+  return signature
+    ? { value: signature, quote: signature, extractor: 'official-content-signature-v1', confidence: 0.97 }
+    : null;
+}
+
+function extractIssuer(pageText, title = '') {
+  return extractIssuerCandidate(pageText, title)?.value || '';
+}
+
+function metaEvidence(meta, keys, validate, extractor) {
+  for (const key of keys) {
+    const value = String(meta.get(key) || '').replace(/\s+/g, ' ').trim();
+    if (value && validate(value)) {
+      return { value, quote: key + ': ' + value, extractor, confidence: 0.98 };
+    }
+  }
+  return null;
 }
 
 function isPlausibleIssuer(value) {
@@ -188,28 +287,53 @@ function extractDocument(raw, options = {}) {
   const text = (isHtml ? htmlToText(preferredBodyHtml(raw)) : pageText).trim();
   if (text.length < 20) throw new Error('document text is too short to analyze');
 
-  const htmlTitle = isHtml ? firstMatch(raw, [/<h1\b[^>]*>([\s\S]*?)<\/h1>/i, /<title\b[^>]*>([\s\S]*?)<\/title>/i]) : '';
-  const firstLine = text.split('\n').map((line) => line.trim()).find((line) => line.length >= 4 && line.length <= 160) || '';
-  const title = cleanSiteTitle(
-    options.title || meta.get('articletitle') || meta.get('og:title') || htmlTitle || options.fallbackTitle || firstLine,
-    options.originalUrl || options.url || ''
-  );
+  const sourceUrl = options.originalUrl || options.url || (options.filename ? pathToFileURL(path.resolve(options.filename)).href : '');
+  if (!sourceUrl) throw new Error('could not determine original URL');
+  const headingTitle = isHtml ? firstMatch(raw, [/<h1\b[^>]*>([\s\S]*?)<\/h1>/i]) : '';
+  const htmlTitle = isHtml ? firstMatch(raw, [/<title\b[^>]*>([\s\S]*?)<\/title>/i]) : '';
+  const leadingTitle = leadingDocumentTitle(text);
+  const isStateCouncilGazettePage = (() => {
+    try {
+      const url = new URL(sourceUrl);
+      return url.hostname === 'www.gov.cn' && url.pathname.startsWith('/gongbao/');
+    } catch {
+      return false;
+    }
+  })();
+  const articleMetaTitle = { value: meta.get('articletitle'), quoteLabel: 'articletitle', extractor: 'official-html-meta-v1', trusted: true };
+  const openGraphTitle = { value: meta.get('og:title'), quoteLabel: 'og:title', extractor: 'official-html-meta-v1', trusted: true };
+  const heading = { value: headingTitle, quoteLabel: 'h1', extractor: 'official-html-heading-v1', trusted: true };
+  const contentHeading = { value: leadingTitle, quoteLabel: 'content heading', extractor: 'official-content-heading-v1', trusted: true };
+  const documentTitle = { value: htmlTitle, quoteLabel: 'document.title', extractor: 'official-html-title-v1', trusted: true };
+  const titleCandidates = [
+    { value: options.title, trusted: false },
+    ...(isStateCouncilGazettePage
+      ? [heading, contentHeading, articleMetaTitle, openGraphTitle, documentTitle]
+      : [articleMetaTitle, openGraphTitle, heading, documentTitle, contentHeading]),
+    { value: options.fallbackTitle, trusted: false }
+  ];
+  const selectedTitle = titleCandidates.find((candidate) => String(candidate.value || '').trim());
+  const title = cleanSiteTitle(selectedTitle?.value, sourceUrl);
   if (!title) throw new Error('could not determine title; provide --title');
 
   const publishedAt = extractPublishedAt(meta, pageText, options.publishedAt);
   if (!publishedAt) throw new Error('could not determine publication date; provide --published-at');
+  const issuerEvidence = extractIssuerCandidate(pageText, title);
+  const metaIssuerEvidence = metaEvidence(meta, ['source', 'publisher'], isPlausibleIssuingBody, 'official-html-meta-v1');
   const issuerCandidates = [
     options.issuer,
-    extractIssuer(pageText),
-    meta.get('source'),
-    meta.get('author'),
+    issuerEvidence?.value,
+    metaIssuerEvidence?.value,
     options.source?.institution
   ];
   const issuer = String(issuerCandidates.find(isPlausibleIssuer) || '').trim();
   if (!issuer) throw new Error('could not determine issuer; provide --issuer or --source');
-
-  const sourceUrl = options.originalUrl || options.url || (options.filename ? pathToFileURL(path.resolve(options.filename)).href : '');
-  if (!sourceUrl) throw new Error('could not determine original URL');
+  const titleEvidence = selectedTitle?.trusted ? {
+    value: title,
+    quote: selectedTitle.quoteLabel + ': ' + String(selectedTitle.value).replace(/\s+/g, ' ').trim(),
+    extractor: selectedTitle.extractor,
+    confidence: 1
+  } : null;
 
   return {
     title: title.slice(0, 300),
@@ -218,7 +342,12 @@ function extractDocument(raw, options = {}) {
     originalUrl: sourceUrl,
     contentText: text.slice(0, 500_000),
     summary: summarize(text),
-    originalExcerpt: summarize(text, 320)
+    originalExcerpt: summarize(text, 320),
+    metadataEvidence: {
+      title: titleEvidence,
+      issuer: issuerEvidence?.value === issuer ? issuerEvidence : (metaIssuerEvidence?.value === issuer ? metaIssuerEvidence : null),
+      publishedAt: publicationMetadataEvidence(meta, pageText, options.publishedAt, publishedAt)
+    }
   };
 }
 
@@ -469,6 +598,7 @@ module.exports = {
   extractElementInnerHtmlById,
   extractDocument,
   extractIssuer,
+  extractIssuerCandidate,
   fetchText,
   htmlToText,
   isSafeDocumentHref,
