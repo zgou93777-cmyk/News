@@ -76,7 +76,7 @@ test('schema 3 databases gain new tables and replace legacy release guards', () 
 
     const upgraded = openDatabase(filename);
     try {
-      assert.equal(getSchemaVersion(upgraded), '16');
+      assert.equal(getSchemaVersion(upgraded), '17');
       const retry = upgraded.prepare(`
         SELECT next_attempt_at,
           next_attempt_at > '2026-07-26T10:00:00.000Z' AS remains_deferred

@@ -441,16 +441,47 @@
       }
     }
     if (!framework || typeof framework !== "object" || Array.isArray(framework)) return null;
+    const implementation = framework.implementationAssessment || framework.implementation_assessment || {};
+    const normalizeStage = (stage, fallbackStatus, fallbackConclusion) => {
+      const value = stage && typeof stage === "object" ? stage : {};
+      return {
+        status: value.status || fallbackStatus,
+        conclusion: value.conclusion || value.detail || fallbackConclusion,
+        evidence: normalizeList(value.evidence || value.evidence_refs)
+      };
+    };
+    const legacyPerspective = framework.perspective === "公共政策执行与实际影响";
     return {
       ready: framework.ready === true,
-      perspective: framework.perspective || "公共政策执行与实际影响",
-      perspectiveNote: framework.perspectiveNote || framework.perspective_note || "",
+      perspective: legacyPerspective
+        ? "政策演进、实际落地与下一步方向"
+        : framework.perspective || "政策演进、实际落地与下一步方向",
+      perspectiveNote: legacyPerspective
+        ? "从政策含义出发，比较历史变化，核对实施、资金和结果，再判断下一步。"
+        : framework.perspectiveNote || framework.perspective_note || "",
       bottomLine: framework.bottomLine || framework.bottom_line || "",
+      finalConclusion: framework.finalConclusion || framework.final_conclusion
+        || framework.bottomLine || framework.bottom_line || "",
       problem: framework.problem || framework.policyProblem || framework.policy_problem || "",
       tools: normalizeList(framework.tools || framework.policyTools || framework.policy_tools),
       affectedGroups: normalizeList(framework.affectedGroups || framework.affected_groups),
       executionPath: normalizeList(framework.executionPath || framework.execution_path),
       historicalChanges: normalizeList(framework.historicalChanges || framework.historical_changes),
+      evolutionNarrative: framework.evolutionNarrative || framework.evolution_narrative
+        || framework.historyBoundary || framework.history_boundary || "",
+      implementationAssessment: {
+        policyRelease: normalizeStage(
+          implementation.policyRelease || implementation.policy_release,
+          "confirmed",
+          "正式政策文本已经发布。"
+        ),
+        implementation: normalizeStage(implementation.implementation, "unknown", "实施进度待核验。"),
+        funding: normalizeStage(implementation.funding, "unknown", "资金进度待核验。"),
+        outcomes: normalizeStage(implementation.outcomes || implementation.outcome, "unknown", "结果进度待核验。"),
+        realizationStatus: implementation.realizationStatus || implementation.realization_status || "",
+        conclusion: implementation.conclusion || ""
+      },
+      forwardSignals: normalizeList(framework.forwardSignals || framework.forward_signals),
       confirmed: normalizeList(framework.confirmed),
       unconfirmed: normalizeList(framework.unconfirmed)
     };
@@ -574,6 +605,7 @@
     const review = raw.review || raw.retrospective || analysis.review || {};
     const reviewStatus = statusKey(raw.review_status || raw.reviewStatus || review.status || raw.landing_status || raw.status);
     const publishedAt = raw.published_at || raw.publishedAt || raw.publish_time || raw.publishDate || raw.date || new Date().toISOString();
+    const analysisFramework = normalizeFramework(raw.analysis_framework || raw.analysisFramework || analysis.framework);
     return {
       id: String(raw.id ?? raw.slug ?? `article-${index + 1}`),
       title: raw.title || raw.headline || "未命名政策分析",
@@ -592,7 +624,7 @@
       contentText: options.includeNarration === true ? extractNarrationText(raw) : "",
       content: raw.content || raw.body || raw.analysis_content || analysis.content || [],
       analysisLead: raw.analysis_lead || raw.analysisLead || raw.key_judgement || analysis.lead || raw.summary || "",
-      analysisFramework: normalizeFramework(raw.analysis_framework || raw.analysisFramework || analysis.framework),
+      analysisFramework,
       analysisVersion: Number(raw.analysis_version || raw.analysisVersion || 0) || null,
       neighbors: raw.neighbors && typeof raw.neighbors === "object" ? raw.neighbors : null,
       analysisHistory: normalizeList(raw.analysis_history || raw.analysisHistory || analysis.history),
@@ -600,7 +632,8 @@
       comparisons: normalizeList(raw.comparisons || raw.policy_comparisons || analysis.comparisons),
       evidence: normalizeList(raw.evidence || raw.evidence_timeline || raw.implementation_evidence || analysis.evidence),
       ambiguities: normalizeList(raw.ambiguities || raw.ambiguity_points || analysis.ambiguities),
-      predictions: normalizeList(raw.predictions || raw.outlook || raw.forecasts || analysis.predictions),
+      predictions: normalizeList(raw.predictions || raw.outlook || raw.forecasts
+        || analysis.predictions || analysisFramework?.forwardSignals),
       review: {
         status: reviewStatus,
         conclusion: review.conclusion || review.summary || raw.review_conclusion || raw.reviewConclusion || "尚待更多公开证据验证。",
@@ -1088,16 +1121,31 @@
   }
 
   function ambiguityList(article) {
-    if (!article.ambiguities.length) return "";
+    const frameworkUnknowns = article.analysisFramework?.unconfirmed || [];
+    const rows = [
+      ...article.ambiguities.filter((item) => !item.status
+        || ["open", "watching", "disputed"].includes(item.status)).map((item) => ({
+        issue: item.issue || item.title || "待澄清问题",
+        why: item.why || item.reason || item.description || "",
+        nextEvidence: item.nextEvidence || item.next_evidence || ""
+      })),
+      ...frameworkUnknowns.map((item) => ({
+        issue: typeof item === "string"
+          ? (item.split(/[，；。]/)[0].slice(0, 28) || "尚无充分依据")
+          : item.title || item.issue || "尚无充分依据",
+        why: typeof item === "string" ? item : item.statement || item.detail || item.description || "",
+        nextEvidence: ""
+      }))
+    ].filter((item, index, list) => item.why && list.findIndex((row) => row.why === item.why) === index);
+    if (!rows.length) return "";
     return `
       <section class="article-section" aria-labelledby="ambiguity-title">
-        <h2 id="ambiguity-title">哪些问题还不能下结论</h2>
-        <p class="article-section-intro">这里记录的是证据冲突和信息缺口，不是含糊其辞的“有待观察”。</p>
+        <h2 id="ambiguity-title">尚不能确认</h2>
         <div class="ambiguity-list">
-          ${article.ambiguities.map((item) => `
+          ${rows.map((item) => `
             <article class="ambiguity-item">
               <div>${statusBadge("ambiguous")}</div>
-              <div><h3>${escapeHTML(item.issue || item.title || "待澄清问题")}</h3><p>${escapeHTML(item.why || item.reason || item.description || "")}</p>${item.nextEvidence || item.next_evidence ? `<p class="verification-target"><strong>怎样才能确认：</strong>${escapeHTML(item.nextEvidence || item.next_evidence)}</p>` : ""}</div>
+              <div><h3>${escapeHTML(item.issue)}</h3><p>${escapeHTML(item.why)}</p>${item.nextEvidence ? `<p class="verification-target"><strong>怎样才能确认：</strong>${escapeHTML(item.nextEvidence)}</p>` : ""}</div>
             </article>`).join("")}
         </div>
       </section>`;
@@ -1107,13 +1155,17 @@
     if (!article.predictions.length) return "";
     return `
       <section class="article-section" aria-labelledby="prediction-title">
-        <h2 id="prediction-title">接下来最值得观察什么</h2>
-        <p class="article-section-intro">每条预判都给出成立理由、验证时间和当前置信度；未到验证节点前不是事实。</p>
+        <h2 id="prediction-title">下一步最可能发生什么</h2>
         <div class="signal-list">
           ${article.predictions.map((item) => `
             <article class="signal-item">
-              <div class="signal-meta"><span class="outlook-label">${escapeHTML(item.timeframe || item.window || "后续观察")}</span><span class="confidence">置信度 ${escapeHTML(item.confidence || "待评估")}</span></div>
-              <div><h3>${escapeHTML(item.signal || item.title || "政策信号")}</h3><p><strong>为什么这样判断：</strong>${escapeHTML(item.trigger || item.condition || item.description || "")}</p></div>
+              <div class="signal-meta"><span class="outlook-label">${escapeHTML(item.timeframe || item.timeWindow || item.window || "后续观察")}</span><span class="confidence">置信度 ${escapeHTML(item.confidence || "待评估")}</span><span class="inference-label">推断</span></div>
+              <div class="signal-body">
+                <h3>${escapeHTML(item.signal || item.statement || item.title || "政策信号")}</h3>
+                <p><strong>判断依据：</strong>${escapeHTML(item.basis || item.trigger || item.condition || item.description || "")}</p>
+                ${item.prerequisites ? `<p><strong>成立前提：</strong>${escapeHTML(item.prerequisites)}</p>` : ""}
+                ${item.disconfirmingEvidence ? `<p class="disconfirming"><strong>何时撤回：</strong>${escapeHTML(item.disconfirmingEvidence)}</p>` : ""}
+              </div>
             </article>`).join("")}
         </div>
       </section>`;
@@ -1122,10 +1174,9 @@
   function analysisVersionHistory(article) {
     if (!article.analysisHistory.length) return "";
     return `
-      <section class="article-section" aria-labelledby="version-history-title">
-        <h2 id="version-history-title">这个结论是怎么变化的</h2>
-        <p class="article-section-intro">旧结论不会被覆盖。这里说明当时怎么判断，以及后来增加了什么证据或边界。</p>
-        <div class="version-history">
+      <details class="analysis-support">
+        <summary><span><i data-lucide="history" aria-hidden="true"></i>研判版本记录</span><i data-lucide="chevron-down" aria-hidden="true"></i></summary>
+        <div class="analysis-support-content version-history">
           ${article.analysisHistory.map((version, index) => {
             const isCurrent = article.analysisVersion
               ? Number(version.version) === Number(article.analysisVersion)
@@ -1143,7 +1194,7 @@
               </article>`;
           }).join("")}
         </div>
-      </section>`;
+      </details>`;
   }
 
   function frameworkEntry(item, fallbackLabel) {
@@ -1164,16 +1215,17 @@
 
   function policyVerdict(article) {
     const framework = article.analysisFramework;
-    const conclusion = framework?.bottomLine || article.review.conclusion || article.analysisLead;
-    const perspective = framework?.perspective || "公共政策执行与实际影响";
+    const conclusion = framework?.finalConclusion || framework?.bottomLine
+      || article.review.conclusion || article.analysisLead;
+    const perspective = framework?.perspective || "政策演进、实际落地与下一步方向";
     const note = framework?.perspectiveNote
-      || "从政策公开目标出发，依次看政策工具、执行责任、受影响对象和实际结果。";
+      || "从政策含义出发，比较历史变化，核对实施、资金和结果，再判断下一步。";
     return `
       <section class="policy-verdict" aria-labelledby="verdict-title">
-        <div class="verdict-heading"><p class="eyebrow">结论先行</p>${statusBadge(article.review.status)}</div>
+        <div class="verdict-heading"><p class="eyebrow">最终结论</p><div class="verdict-status"><span>兑现判断</span>${statusBadge(article.review.status)}</div></div>
         <h2 id="verdict-title">${escapeHTML(conclusion)}</h2>
         <div class="analysis-perspective">
-          <span><i data-lucide="scan-search" aria-hidden="true"></i>分析视角</span>
+          <span><i data-lucide="scan-search" aria-hidden="true"></i>研判视角</span>
           <p><strong>${escapeHTML(perspective)}</strong>：${escapeHTML(note)}</p>
         </div>
       </section>`;
@@ -1184,14 +1236,14 @@
     if (!framework?.ready) {
       return `
         <section class="article-section" aria-labelledby="framework-title">
-          <h2 id="framework-title">政策怎么理解</h2>
+          <h2 id="framework-title">这项政策到底意味着什么</h2>
           <div class="analysis-unavailable"><i data-lucide="file-search" aria-hidden="true"></i><div><strong>结构化解读尚未完成</strong><p>当前记录还没有同时通过政策问题、工具、影响对象和执行路径四项复核，因此暂不展示推断式拆解。</p></div></div>
         </section>`;
     }
     return `
       <section class="article-section" aria-labelledby="framework-title">
-        <h2 id="framework-title">政策怎么理解</h2>
-        <p class="article-section-intro">把政策语言还原成“为什么做、用什么办法、影响谁、怎样落地”。</p>
+        <h2 id="framework-title">这项政策到底意味着什么</h2>
+        ${framework.bottomLine && framework.bottomLine !== framework.finalConclusion ? `<p class="meaning-summary"><strong>一句话理解</strong>${escapeHTML(framework.bottomLine)}</p>` : ""}
         <div class="policy-logic">
           <div class="logic-row logic-problem"><div class="logic-label"><span>01</span><strong>要解决的问题</strong></div><p>${escapeHTML(framework.problem)}</p></div>
           <div class="logic-row"><div class="logic-label"><span>02</span><strong>使用什么工具</strong></div><ul>${frameworkList(framework.tools, "政策工具")}</ul></div>
@@ -1202,22 +1254,96 @@
   }
 
   function historicalChangeSection(article) {
+    const framework = article.analysisFramework;
+    const evolution = framework?.evolutionNarrative || article.comparisons
+      .map((item) => item.implication || item.impact || item.analysis || "")
+      .filter(Boolean).join("");
     if (!article.comparisons.length) {
       return `
         <section class="article-section" aria-labelledby="comparison-title">
-          <h2 id="comparison-title">跟过去相比，变了什么</h2>
+          <h2 id="comparison-title">政策是怎么走到今天的</h2>
           <div class="analysis-unavailable compact"><i data-lucide="git-compare-arrows" aria-hidden="true"></i><div><strong>暂无可核验的往期差异</strong><p>当前没有更早的同政策脉络原文，或实质差异尚未完成逐条核对。</p></div></div>
         </section>`;
     }
     return `
       <section class="article-section" aria-labelledby="comparison-title">
-        <h2 id="comparison-title">跟过去相比，变了什么</h2>
-        <p class="article-section-intro">只比较同一政策脉络中的目标、工具和执行逻辑，不用标题变化代替实质变化。</p>
+        <h2 id="comparison-title">政策是怎么走到今天的</h2>
+        ${evolution ? `<p class="evolution-narrative">${escapeHTML(evolution)}</p>` : ""}
         <div class="comparison-wrap">
           <table class="comparison-table">
             <thead><tr><th>比较维度</th><th>过去怎么做</th><th>现在怎么做</th><th>意味着什么</th></tr></thead>
             <tbody>${comparisonRows(article)}</tbody>
           </table>
+        </div>
+      </section>`;
+  }
+
+  function realizationStageStatus(value) {
+    const map = {
+      confirmed: { label: "已确认", icon: "badge-check", tone: "confirmed" },
+      verified: { label: "已找到证据", icon: "circle-check", tone: "verified" },
+      partial: { label: "部分完成", icon: "circle-dot", tone: "partial" },
+      not_found: { label: "未找到证据", icon: "circle-dashed", tone: "not-found" },
+      not_applicable: { label: "不适用", icon: "minus", tone: "muted" },
+      unknown: { label: "待核验", icon: "circle-help", tone: "muted" }
+    };
+    return map[value] || map.unknown;
+  }
+
+  function realizationSection(article) {
+    const assessment = article.analysisFramework?.implementationAssessment || {};
+    const observedTypes = new Set(article.evidence
+      .filter((item) => ["observed", "confirmed"].includes(item.status))
+      .map((item) => item.eventType));
+    const fallbackStage = (kind, foundText, missingText) => ({
+      status: observedTypes.has(kind) ? "verified" : "not_found",
+      conclusion: observedTypes.has(kind) ? foundText : missingText
+    });
+    const stages = [
+      {
+        key: "policy-release",
+        label: "政策发布",
+        value: !assessment.policyRelease || assessment.policyRelease.status === "unknown"
+          ? { status: "confirmed", conclusion: "正式政策文本已经收录并核验。" }
+          : assessment.policyRelease
+      },
+      {
+        key: "implementation",
+        label: "实施执行",
+        value: !assessment.implementation || assessment.implementation.status === "unknown"
+          ? fallbackStage("implementation", "已出现正式实施证据。", "尚未找到明确实施证据。")
+          : assessment.implementation
+      },
+      {
+        key: "funding",
+        label: "资金项目",
+        value: !assessment.funding || assessment.funding.status === "unknown"
+          ? fallbackStage("funding", "已出现实际资金或项目证据。", "尚未找到实际资金或项目证据。")
+          : assessment.funding
+      },
+      {
+        key: "outcomes",
+        label: "结果成效",
+        value: !assessment.outcomes || assessment.outcomes.status === "unknown"
+          ? fallbackStage("result_data", "已出现官方结果证据。", "尚未找到明确结果证据。")
+          : assessment.outcomes
+      }
+    ];
+    const conclusion = assessment.conclusion || article.review.conclusion;
+    return `
+      <section class="article-section realization-section" aria-labelledby="realization-title">
+        <div class="section-heading-row"><h2 id="realization-title">目前兑现到哪一步</h2>${statusBadge(assessment.realizationStatus || article.review.status)}</div>
+        ${conclusion ? `<p class="realization-conclusion">${escapeHTML(conclusion)}</p>` : ""}
+        <div class="realization-grid">
+          ${stages.map((stage) => {
+            const value = stage.value || { status: "unknown", conclusion: "待核验。" };
+            const status = realizationStageStatus(value.status);
+            return `
+              <article class="realization-stage realization-${escapeHTML(status.tone)}">
+                <div class="stage-heading"><span>${escapeHTML(stage.label)}</span><span class="stage-status"><i data-lucide="${status.icon}" aria-hidden="true"></i>${escapeHTML(status.label)}</span></div>
+                <p>${escapeHTML(value.conclusion || "待核验。")}</p>
+              </article>`;
+          }).join("")}
         </div>
       </section>`;
   }
@@ -1237,6 +1363,28 @@
           <div class="boundary-unconfirmed"><h3><i data-lucide="circle-help" aria-hidden="true"></i>不能外推</h3><ul>${renderItems(framework.unconfirmed)}</ul></div>
         </div>
       </section>`;
+  }
+
+  function evidenceSupport(article) {
+    return `
+      <details class="analysis-support">
+        <summary><span><i data-lucide="list-checks" aria-hidden="true"></i>依据与引用</span><i data-lucide="chevron-down" aria-hidden="true"></i></summary>
+        <div class="analysis-support-content">
+          ${evidenceBoundary(article)}
+          <section class="support-section" aria-labelledby="evidence-title">
+            <h2 id="evidence-title">核验时间线</h2>
+            <div class="evidence-timeline">${evidenceTimeline(article)}</div>
+          </section>
+        </div>
+      </details>`;
+  }
+
+  function reviewRecord(article) {
+    return `
+      <details class="analysis-support">
+        <summary><span><i data-lucide="clipboard-check" aria-hidden="true"></i>最后复核</span><i data-lucide="chevron-down" aria-hidden="true"></i></summary>
+        <div class="analysis-support-content"><p class="method-note">本次复核从政策演进和实际落地角度，重新核对实施、资金、结果以及前瞻判断的公开依据。复核时间为 ${escapeHTML(formatDate(article.review.verifiedAt))}；出现新证据时新增版本，不覆盖旧判断。</p></div>
+      </details>`;
   }
 
   function originalTextSection(article) {
@@ -1283,24 +1431,18 @@
             <div class="article-body">
               ${policyFramework(article)}
               ${historicalChangeSection(article)}
-              ${evidenceBoundary(article)}
-
-              <section class="article-section" aria-labelledby="evidence-title">
-                <h2 id="evidence-title">结论依据</h2>
-                <p class="article-section-intro">正式发文只证明政策已经发布；实施、资金和结果必须由后续公开证据分别确认。</p>
-                <div class="evidence-timeline">${evidenceTimeline(article)}</div>
-              </section>
-
-              ${ambiguityList(article)}
+              ${realizationSection(article)}
               ${predictionList(article)}
+              ${ambiguityList(article)}
+              ${evidenceSupport(article)}
               ${analysisVersionHistory(article)}
               ${originalTextSection(article)}
-              <p class="method-note"><strong>复核口径：</strong>最后复核回答的是“政策目标是否已经进入执行、资金或项目是否发生、结果是否出现”，不评价政策立场，也不构成投资建议。最后复核于 ${escapeHTML(formatDate(article.review.verifiedAt))}；新证据出现后会新增版本，不覆盖旧判断。</p>
+              ${reviewRecord(article)}
             </div>
 
             <aside class="article-aside" aria-label="文章信息">
               <section class="aside-block">
-                <h2>当前证据状态</h2>
+                <h2>当前兑现判断</h2>
                 <div class="review-stamp status-${escapeHTML(article.review.status)}">
                   ${statusBadge(article.review.status)}
                   <strong>${escapeHTML(article.review.conclusion)}</strong>

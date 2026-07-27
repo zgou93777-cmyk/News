@@ -59,6 +59,10 @@ function reviewInput(item) {
     },
     framework: {
       bottom_line: 'The reviewed policy remains limited to claims in the official source.',
+      final_conclusion: {
+        text: 'The review supports only the claims found in the official source.',
+        evidence_refs: [{ source_id: 'current_policy', quote: item.quote }]
+      },
       policy_problem: {
         text: 'Define the policy issue without adding unsupported claims.',
         evidence_refs: [{ source_id: 'current_policy', quote: item.quote }]
@@ -76,7 +80,17 @@ function reviewInput(item) {
         evidence_refs: [{ source_id: 'current_policy', quote: item.quote }]
       }],
       historical_comparison: [],
-      history_boundary: 'No verified predecessor was supplied.'
+      history_boundary: 'No verified predecessor was supplied.',
+      forward_signals: [{
+        signal: 'A later review should check for an official lifecycle update.',
+        basis: 'The current review is limited to the supplied official source.',
+        time_window: 'Next official archive review',
+        expected_by: null,
+        confidence: 0.55,
+        prerequisites: 'The official archive remains available for review.',
+        disconfirming_evidence: 'An official record closes the policy lifecycle with no successor.',
+        evidence_refs: [{ source_id: 'current_policy', quote: item.quote }]
+      }]
     },
     reviewNotes: 'Compared the queued transcription with the official source.',
     reviewedBy: 'reviewer-1',

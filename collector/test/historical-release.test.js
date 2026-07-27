@@ -124,6 +124,10 @@ function createReadyItem(db, suffix = '21') {
   const sourceId = `item:${itemId}`;
   const frameworkPayload = {
     bottom_line: '这项政策已经形成正式文本，但实施和结果仍需分别核验。',
+    final_conclusion: {
+      text: '政策已经发布并出现实施和结果证据，但不能据此断定结果完全由该政策造成。',
+      evidence_refs: [{ source_id: sourceId, quote: title }]
+    },
     policy_problem: {
       text: '明确历史政策的适用问题和执行边界。',
       evidence_refs: [{ source_id: sourceId, quote: title }]
@@ -141,7 +145,17 @@ function createReadyItem(db, suffix = '21') {
       evidence_refs: [{ source_id: sourceId, quote: '正式政策原文。' }]
     }],
     historical_comparison: [],
-    history_boundary: '没有已核验的前序政策关系，不作历史对比。'
+    history_boundary: '没有已核验的前序政策关系，不作历史对比。',
+    forward_signals: [{
+      signal: '后续复核将重点观察政策修订或废止信息。',
+      basis: '当前政策已经形成正式文本并进入执行阶段。',
+      time_window: '下一次官方档案更新周期',
+      expected_by: null,
+      confidence: 0.6,
+      prerequisites: '官方档案继续公开政策生命周期信息。',
+      disconfirming_evidence: '正式文件确认政策已终止且没有后续安排。',
+      evidence_refs: [{ source_id: sourceId, quote: title }]
+    }]
   };
   const normalizedFramework = normalizeHistoricalFramework(frameworkPayload, evidenceBundle, analysis);
   const framework = storeFrameworkVersion(
@@ -205,6 +219,7 @@ test('release worker publishes one traceable article and exposes its four-status
     assert.equal(document.effective_at, '2000-02-01T00:00:00+08:00');
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM historical_public_releases').get().count, 1);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM policy_signals').get().count, 2);
+    assert.equal(db.prepare('SELECT COUNT(*) AS count FROM forecasts').get().count, 1);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM implementation_events').get().count, 3);
     const listed = listArticles(db, { page: 1, pageSize: 10, reviewStatus: 'verified' });
     assert.equal(listed.total, 1);
@@ -212,9 +227,10 @@ test('release worker publishes one traceable article and exposes its four-status
     assert.equal(listed.articles[0].review.confidence, '99%');
     const detail = getArticleDetail(db, item.document_id);
     assert.equal(detail.article.review.status, 'verified');
-    assert.match(detail.article.review.conclusion, /结果不自动证明政策因果/);
+    assert.match(detail.article.review.conclusion, /不能据此断定结果完全由该政策造成/);
     assert.equal(detail.article.analysisFramework.ready, true);
     assert.equal(detail.article.analysisFramework.problem, '明确历史政策的适用问题和执行边界。');
+    assert.equal(detail.article.predictions[0].timeframe, '下一次官方档案更新周期');
 
     const second = await runHistoricalReleaseQueue(db, { maxItems: 1 }, {
       loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })

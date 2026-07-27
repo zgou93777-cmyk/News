@@ -164,6 +164,37 @@ function insertPublicFramework(db, analysisId, framework) {
   `).run(analysisId, framework.framework_json, framework.method);
 }
 
+function insertForecasts(db, analysisId, frameworkRow) {
+  const framework = safeJson(frameworkRow.framework_json, {});
+  const insert = db.prepare(`
+    INSERT INTO forecasts (
+      analysis_version_id, statement, basis, expected_by, confidence,
+      status, verification_note
+    ) VALUES (?, ?, ?, ?, ?, 'pending', ?)
+  `);
+  let count = 0;
+  for (const signal of framework.forwardSignals || []) {
+    const expectedBy = /^\d{4}-\d{2}-\d{2}$/.test(signal.expectedBy || '')
+      ? signal.expectedBy
+      : null;
+    const verificationNote = [
+      `时间窗口：${signal.timeWindow}`,
+      `前置条件：${signal.prerequisites}`,
+      `反证条件：${signal.disconfirmingEvidence}`
+    ].join('；');
+    insert.run(
+      analysisId,
+      signal.signal,
+      signal.basis,
+      expectedBy,
+      Number(signal.confidence),
+      verificationNote
+    );
+    count += 1;
+  }
+  return count;
+}
+
 function insertSignals(db, documentId, itemId) {
   const rows = db.prepare(`
     SELECT evidence_type, title, source_url, evidence_quote, observed_at, confidence
@@ -394,6 +425,7 @@ function releaseHistoricalItem(db, item) {
     const document = ensureDocument(db, item, analysis, sourceId, familyId, category);
     const publicAnalysis = insertPublicAnalysis(db, document.documentId, item, analysis, assessment);
     insertPublicFramework(db, publicAnalysis.analysisId, framework);
+    const forecasts = insertForecasts(db, publicAnalysis.analysisId, framework);
     const signals = insertSignals(db, document.documentId, item.id);
     const ambiguities = insertAmbiguities(db, document.documentId, publicAnalysis.analysisId, analysis, item.reviewed_at);
     const lineage = insertEventsAndAssessment(db, familyId, document.documentId, item, analysis);
@@ -420,6 +452,7 @@ function releaseHistoricalItem(db, item) {
       analysisVersion: publicAnalysis.version,
       reviewStatus: analysis.reviewStatus,
       signals,
+      forecasts,
       ambiguities,
       events: lineage.events,
       cohortStatus

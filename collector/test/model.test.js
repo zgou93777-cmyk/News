@@ -48,7 +48,9 @@ test('auto mode uses normalized OpenAI-compatible JSON when configured', async (
   assert.equal(output.analysis.forecasts[0].confidence, 0.6);
   assert.equal(output.analysis.signals[0].evidenceQuote, '测试部门发布政策，后续应核验正式执行数据。');
   assert.equal(output.analysis.framework.ready, true);
-  assert.equal(output.analysis.promptVersion, 'analyze-policy-v2');
+  assert.equal(output.analysis.promptVersion, 'analyze-policy-v3');
+  assert.match(output.analysis.framework.finalConclusion, /不代表结果已经出现/);
+  assert.equal(output.analysis.framework.forwardSignals[0].expectedBy, '2026-10-01');
 });
 
 test('auto mode falls back to rules while explicit model mode fails', async () => {

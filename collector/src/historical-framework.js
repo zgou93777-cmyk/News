@@ -13,8 +13,8 @@ const {
 } = require('./model');
 
 const DEFAULT_PROMPT_PATH = path.resolve(__dirname, '..', '..', 'prompts', 'analyze-historical-policy.md');
-const METHOD = 'historical-structured-framework-v1';
-const PROMPT_VERSION = 'analyze-historical-policy-v1';
+const METHOD = 'historical-policy-judgment-v2';
+const PROMPT_VERSION = 'analyze-historical-policy-v2';
 const MAX_EVIDENCE_SOURCES = 12;
 const MAX_CURRENT_SOURCE_TEXT = 80_000;
 const MAX_RELATED_SOURCE_TEXT = 30_000;
@@ -232,6 +232,125 @@ function historicalChanges(value, sourceMap) {
   }).filter(Boolean);
 }
 
+function textSection(value, evidenceValue, sourceMap, maximum = 1500) {
+  const input = value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : { text: value, evidence_refs: evidenceValue };
+  return {
+    text: asText(input.text || input.detail || input.conclusion || input.narrative, maximum),
+    evidence: evidenceReferences(
+      input.evidence_refs || input.evidenceRefs || input.evidence || evidenceValue,
+      sourceMap
+    )
+  };
+}
+
+function boundedSignalConfidence(value) {
+  const named = {
+    '高': 0.8,
+    '较高': 0.7,
+    '中等': 0.5,
+    '中': 0.5,
+    '较低': 0.35,
+    '低': 0.2
+  };
+  const numeric = Number(Object.hasOwn(named, value) ? named[value] : value);
+  return Number.isFinite(numeric) ? Number(Math.min(1, Math.max(0, numeric)).toFixed(2)) : null;
+}
+
+function normalizeForwardSignals(value, sourceMap) {
+  return (Array.isArray(value) ? value : []).slice(0, 6).map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const signal = asText(entry.signal || entry.statement || entry.title, 1000);
+    const basis = asText(entry.basis || entry.reason || entry.rationale, 1500);
+    const timeWindow = asText(entry.time_window || entry.timeWindow || entry.window || entry.timeframe, 160);
+    const expectedByValue = asText(entry.expected_by || entry.expectedBy, 20);
+    const expectedBy = /^\d{4}-\d{2}-\d{2}$/.test(expectedByValue) ? expectedByValue : null;
+    const confidence = boundedSignalConfidence(entry.confidence);
+    const prerequisites = asText(entry.prerequisites || entry.preconditions || entry.conditions, 1000);
+    const disconfirmingEvidence = asText(
+      entry.disconfirming_evidence || entry.disconfirmingEvidence
+        || entry.disproof_condition || entry.counterevidence,
+      1000
+    );
+    const evidence = evidenceReferences(
+      entry.evidence_refs || entry.evidenceRefs || entry.evidence,
+      sourceMap
+    );
+    if (!signal || !basis || !timeWindow || confidence == null || !prerequisites
+        || !disconfirmingEvidence || !evidence.length) return null;
+    return {
+      signal,
+      basis,
+      timeWindow,
+      expectedBy,
+      confidence,
+      prerequisites,
+      disconfirmingEvidence,
+      evidence
+    };
+  }).filter(Boolean);
+}
+
+function assessmentReferences(assessmentAnalysis, sourceMap, evidenceType) {
+  const references = [];
+  for (const citation of assessmentAnalysis.citations || []) {
+    if (citation.kind !== 'policy_evidence' || citation.evidenceType !== evidenceType) continue;
+    const source = [...sourceMap.values()].find((entry) => (
+      entry.sourceUrl === officialUrl(citation.sourceUrl) && normalizedIncludes(entry.text, citation.quote)
+    ));
+    if (!source) continue;
+    const reference = evidenceReference({ source_id: source.id, quote: citation.quote }, sourceMap);
+    if (reference) references.push(reference);
+  }
+  for (const source of sourceMap.values()) {
+    if (!source.roles.includes(`verified_${evidenceType}`)
+        && !source.roles.includes(`human_verified_${evidenceType}`)) continue;
+    const reference = evidenceReference({ source_id: source.id, quote: source.text.slice(0, 800) }, sourceMap);
+    if (reference) references.push(reference);
+  }
+  return [...new Map(references.map((entry) => [`${entry.sourceId}\n${entry.quote}`, entry])).values()];
+}
+
+function realizationAssessment(assessmentAnalysis, sourceMap, policyEvidence) {
+  const implementationEvidence = assessmentReferences(assessmentAnalysis, sourceMap, 'implementation');
+  const fundingEvidence = assessmentReferences(assessmentAnalysis, sourceMap, 'funding');
+  const outcomeEvidence = assessmentReferences(assessmentAnalysis, sourceMap, 'outcome');
+  const reviewStatus = ['verified', 'partial', 'ambiguous', 'watching'].includes(assessmentAnalysis.reviewStatus)
+    ? assessmentAnalysis.reviewStatus
+    : 'watching';
+  const stage = (evidence, found, missing) => ({
+    status: evidence.length ? 'verified' : 'not_found',
+    conclusion: evidence.length ? found : missing,
+    evidence
+  });
+  return {
+    policyRelease: {
+      status: 'confirmed',
+      conclusion: '正式政策文本及核心元数据已经核验。',
+      evidence: policyEvidence.slice(0, 2)
+    },
+    implementation: stage(
+      implementationEvidence,
+      '已找到达到门槛的正式实施或执行证据。',
+      '在已完成的官方检索范围内未找到达到门槛的实施证据。'
+    ),
+    funding: stage(
+      fundingEvidence,
+      '已找到达到门槛的实际资金安排或拨付证据。',
+      '在已完成的官方检索范围内未找到达到门槛的实际资金证据。'
+    ),
+    outcomes: stage(
+      outcomeEvidence,
+      '已找到达到门槛的官方结果证据；观察到结果不等于已证明单一政策因果。',
+      '在已完成的官方检索范围内未找到达到门槛的结果证据。'
+    ),
+    realizationStatus: reviewStatus,
+    conclusion: asText(assessmentAnalysis.summary, 1500)
+      || '兑现判断尚缺少完整的官方证据检索结果。'
+  };
+}
+
 function normalizeHistoricalFramework(payload, evidenceBundle, assessmentAnalysis = {}) {
   const sourceMap = new Map(evidenceBundle.sources.map((source) => [source.id, source]));
   const input = payload?.policy_analysis && typeof payload.policy_analysis === 'object'
@@ -252,6 +371,19 @@ function normalizeHistoricalFramework(payload, evidenceBundle, assessmentAnalysi
   const affectedGroups = structuredItems(input.affected_groups || input.affectedGroups, sourceMap);
   const executionPath = structuredItems(input.execution_path || input.executionPath, sourceMap);
   const changes = historicalChanges(input.historical_comparison || input.historicalChanges, sourceMap);
+  const finalSection = textSection(
+    input.final_conclusion || input.finalConclusion,
+    input.final_conclusion_evidence_refs || input.finalConclusionEvidence,
+    sourceMap,
+    1500
+  );
+  const evolutionSection = textSection(
+    input.evolution_narrative || input.evolutionNarrative,
+    input.evolution_evidence_refs || input.evolutionEvidence,
+    sourceMap,
+    2000
+  );
+  const signals = normalizeForwardSignals(input.forward_signals || input.forwardSignals, sourceMap);
   const missing = [];
   if (!problem || !problemEvidence.length) missing.push('policy_problem');
   if (!tools.length || tools.some((entry) => !entry.evidence.length)) missing.push('policy_tools');
@@ -259,6 +391,11 @@ function normalizeHistoricalFramework(payload, evidenceBundle, assessmentAnalysi
   if (!executionPath.length || executionPath.some((entry) => !entry.evidence.length)) missing.push('execution_path');
   const rawBottomLine = asText(input.bottom_line || input.bottomLine || payload?.summary, 1000);
   if (!rawBottomLine) missing.push('bottom_line');
+  if (!finalSection.text || !finalSection.evidence.length) missing.push('final_conclusion');
+  if (changes.length && (!evolutionSection.text || !evolutionSection.evidence.length)) {
+    missing.push('evolution_narrative');
+  }
+  if (!signals.length) missing.push('forward_signals');
   const bottomLine = rawBottomLine
     || '结构化政策解读尚未完成，当前条目继续保持私有。';
   const confirmed = (assessmentAnalysis.citations || []).map((entry) => asText(entry.quote, 800)).filter(Boolean).slice(0, 8);
@@ -268,9 +405,11 @@ function normalizeHistoricalFramework(payload, evidenceBundle, assessmentAnalysi
   if (missing.length) unconfirmed.push(`结构化解读缺少可回链证据：${[...new Set(missing)].join('、')}`);
   const framework = {
     ready: missing.length === 0,
-    perspective: '公共政策执行与实际影响',
-    perspectiveNote: '从政策公开目标出发，依次核对政策工具、执行责任、受影响对象和实际结果；不从宣传口径、行业立场或资产涨跌角度评价政策。',
+    perspective: '政策演进、实际落地与下一步方向',
+    perspectiveNote: '从政策要解决的问题出发，比较历史变化，核对实施、资金和结果，再基于公开证据判断下一步；不把政策表态、市场反应或行业愿望当成兑现事实。',
     bottomLine,
+    finalConclusion: finalSection.text || bottomLine,
+    finalConclusionEvidence: finalSection.evidence,
     problem,
     problemEvidence,
     tools,
@@ -279,6 +418,11 @@ function normalizeHistoricalFramework(payload, evidenceBundle, assessmentAnalysi
     historicalChanges: changes,
     historyBoundary: asText(input.history_boundary || input.historyBoundary, 1000)
       || (changes.length ? '' : '现有已核验关系不足以支持实质历史对比，暂不外推政策演变。'),
+    evolutionNarrative: evolutionSection.text
+      || (changes.length ? '' : asText(input.history_boundary || input.historyBoundary, 1000)),
+    evolutionEvidence: evolutionSection.evidence,
+    implementationAssessment: realizationAssessment(assessmentAnalysis, sourceMap, problemEvidence),
+    forwardSignals: signals,
     confirmed,
     unconfirmed: [...new Set(unconfirmed)]
   };
@@ -287,7 +431,10 @@ function normalizeHistoricalFramework(payload, evidenceBundle, assessmentAnalysi
     ...tools.flatMap((entry) => entry.evidence),
     ...affectedGroups.flatMap((entry) => entry.evidence),
     ...executionPath.flatMap((entry) => entry.evidence),
-    ...changes.flatMap((entry) => entry.evidence)
+    ...changes.flatMap((entry) => entry.evidence),
+    ...finalSection.evidence,
+    ...evolutionSection.evidence,
+    ...signals.flatMap((entry) => entry.evidence)
   ];
   const evidence = [...new Map(citations.map((entry) => [`${entry.sourceId}\n${entry.quote}`, entry])).values()];
   return { framework, evidence, missing: [...new Set(missing)] };

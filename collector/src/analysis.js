@@ -142,14 +142,25 @@ function buildRulesAnalysis(document, source) {
     evidenceSummary: `分析方式：rules-based。提取到 ${signals.length} 条原文量化信号、${ambiguities.length} 项待核验边界；所有推断均需人工或后续官方证据复核。`,
     framework: {
       ready: false,
-      perspective: '公共政策执行与实际影响',
-      perspectiveNote: '规则扫描只能识别主题和行动表述，尚不能替代逐条政策解释。',
+      perspective: '政策演进、实际落地与下一步方向',
+      perspectiveNote: '规则扫描只能识别主题和行动表述，尚不能替代逐条政策解释、历史比较和前瞻判断。',
       bottomLine: `原文聚焦${themeLabel}，但尚未完成人工或模型辅助的政策问题、工具、对象和执行链路复核。`,
+      finalConclusion: `原文聚焦${themeLabel}，但现有规则分析不足以判断历史演进、兑现程度和下一步方向。`,
       problem: '',
       tools: [],
       affectedGroups: [],
       executionPath: [],
       historicalChanges: [],
+      evolutionNarrative: '',
+      implementationAssessment: {
+        policyRelease: { status: 'confirmed', conclusion: '正式政策文本已经收录。', evidence: [] },
+        implementation: { status: 'unknown', conclusion: '实施进度尚未核验。', evidence: [] },
+        funding: { status: 'unknown', conclusion: '资金进度尚未核验。', evidence: [] },
+        outcomes: { status: 'unknown', conclusion: '结果进度尚未核验。', evidence: [] },
+        realizationStatus: 'watching',
+        conclusion: '规则扫描不足以判断政策兑现程度。'
+      },
+      forwardSignals: [],
       confirmed: signals.map((signal) => signal.evidenceQuote).slice(0, 4),
       unconfirmed: ambiguities.map((item) => item.description)
     },

@@ -66,12 +66,26 @@ function completePayload(item) {
   const evidence = () => [{ source_id: `item:${item.itemId}`, quote: item.quote }];
   return {
     bottom_line: '政策明确了任务和责任，但发文不等于已经形成实施结果。',
+    final_conclusion: {
+      text: '政策方向已经明确，但当前只能确认发文，尚不能确认实施和结果。',
+      evidence_refs: evidence()
+    },
     policy_problem: { text: '明确政策任务、对象和责任。', evidence_refs: evidence() },
     policy_tools: [{ label: '任务部署', detail: '用正式政策文本部署任务。', evidence_refs: evidence() }],
     affected_groups: [{ label: '执行部门', detail: '有关部门按职责组织实施。', evidence_refs: evidence() }],
     execution_path: [{ label: '部门实施', detail: '从正式发文进入部门执行。', evidence_refs: evidence() }],
     historical_comparison: [],
-    history_boundary: '没有已核验前序政策关系，不作历史对比。'
+    history_boundary: '没有已核验前序政策关系，不作历史对比。',
+    forward_signals: [{
+      signal: '下一步应出现部门实施安排。',
+      basis: '政策原文已经把组织实施责任交给有关部门。',
+      time_window: '发布后180天',
+      expected_by: '2000-06-30',
+      confidence: 0.66,
+      prerequisites: '有关部门形成正式执行文件。',
+      disconfirming_evidence: '发布后未形成执行文件，或正式文件撤回任务。',
+      evidence_refs: evidence()
+    }]
   };
 }
 
@@ -101,6 +115,8 @@ test('citation-checked framework moves an assessed historical item to private re
     const payload = JSON.parse(framework.framework_json);
     assert.equal(payload.ready, true);
     assert.equal(payload.tools[0].evidence[0].quote, item.quote);
+    assert.equal(payload.implementationAssessment.realizationStatus, 'watching');
+    assert.equal(payload.forwardSignals[0].timeWindow, '发布后180天');
     assert.throws(
       () => db.prepare('UPDATE historical_analysis_frameworks SET model_name = ? WHERE id = ?')
         .run('changed', framework.id),
@@ -175,21 +191,32 @@ test('database rejects a ready framework whose cited quote is absent from the of
     const structured = { label: '伪造项', detail: '伪造细节', evidence: [citation] };
     const framework = {
       ready: true,
-      perspective: '公共政策执行与实际影响',
+      perspective: '政策演进、实际落地与下一步方向',
       bottomLine: '伪造结论',
+      finalConclusion: '伪造最终结论',
+      finalConclusionEvidence: [citation],
       problem: '伪造问题',
       problemEvidence: [citation],
       tools: [structured],
       affectedGroups: [structured],
       executionPath: [structured],
-      historicalChanges: []
+      historicalChanges: [],
+      implementationAssessment: {
+        realizationStatus: 'watching',
+        conclusion: '伪造兑现判断'
+      },
+      forwardSignals: [{
+        signal: '伪造信号', basis: '伪造依据', timeWindow: '未来一年',
+        confidence: 0.5, prerequisites: '伪造前提', disconfirmingEvidence: '伪造反证',
+        evidence: [citation]
+      }]
     };
     assert.throws(
       () => db.prepare(`
         INSERT INTO historical_analysis_frameworks (
           assessment_version_id, version, source_checksum, input_checksum,
           response_checksum, framework_json, evidence_json, method, model_name, prompt_version
-        ) SELECT ?, 1, item.checksum, ?, ?, ?, ?, 'forged', 'forged', 'analyze-historical-policy-v1'
+        ) SELECT ?, 1, item.checksum, ?, ?, ?, ?, 'forged', 'forged', 'analyze-historical-policy-v2'
           FROM historical_backfill_items item WHERE item.id = ?
       `).run(
         item.assessmentId,

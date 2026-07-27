@@ -588,16 +588,27 @@ CREATE TABLE IF NOT EXISTS historical_analysis_frameworks (
 CREATE INDEX IF NOT EXISTS idx_historical_framework_ready
 ON historical_analysis_frameworks(assessment_version_id, version DESC);
 
+-- Recreate this gate on upgrades so ready frameworks always satisfy the
+-- current reader-facing judgment contract.
+DROP TRIGGER IF EXISTS historical_analysis_frameworks_ready_insert_guard;
+
 CREATE TRIGGER IF NOT EXISTS historical_analysis_frameworks_ready_insert_guard
 BEFORE INSERT ON historical_analysis_frameworks
 WHEN json_extract(NEW.framework_json, '$.ready') IS 1
 BEGIN
   SELECT CASE WHEN
+    trim(coalesce(json_extract(NEW.framework_json, '$.finalConclusion'), '')) = '' OR
+    coalesce(json_array_length(NEW.framework_json, '$.finalConclusionEvidence'), 0) = 0 OR
     trim(coalesce(json_extract(NEW.framework_json, '$.problem'), '')) = '' OR
     json_array_length(NEW.framework_json, '$.problemEvidence') = 0 OR
     json_array_length(NEW.framework_json, '$.tools') = 0 OR
     json_array_length(NEW.framework_json, '$.affectedGroups') = 0 OR
     json_array_length(NEW.framework_json, '$.executionPath') = 0 OR
+    json_type(NEW.framework_json, '$.implementationAssessment') <> 'object' OR
+    json_extract(NEW.framework_json, '$.implementationAssessment.realizationStatus')
+      NOT IN ('verified', 'partial', 'ambiguous', 'watching') OR
+    trim(coalesce(json_extract(NEW.framework_json, '$.implementationAssessment.conclusion'), '')) = '' OR
+    coalesce(json_array_length(NEW.framework_json, '$.forwardSignals'), 0) = 0 OR
     json_array_length(NEW.evidence_json) = 0 OR
     EXISTS (
       SELECT 1 FROM json_each(NEW.framework_json, '$.tools') entry
@@ -610,6 +621,16 @@ BEGIN
     EXISTS (
       SELECT 1 FROM json_each(NEW.framework_json, '$.executionPath') entry
       WHERE json_array_length(entry.value, '$.evidence') = 0
+    ) OR
+    EXISTS (
+      SELECT 1 FROM json_each(NEW.framework_json, '$.forwardSignals') entry
+      WHERE trim(coalesce(json_extract(entry.value, '$.signal'), '')) = ''
+        OR trim(coalesce(json_extract(entry.value, '$.basis'), '')) = ''
+        OR trim(coalesce(json_extract(entry.value, '$.timeWindow'), '')) = ''
+        OR trim(coalesce(json_extract(entry.value, '$.prerequisites'), '')) = ''
+        OR trim(coalesce(json_extract(entry.value, '$.disconfirmingEvidence'), '')) = ''
+        OR json_extract(entry.value, '$.confidence') NOT BETWEEN 0 AND 1
+        OR coalesce(json_array_length(entry.value, '$.evidence'), 0) = 0
     ) OR
     EXISTS (
       SELECT 1 FROM json_each(NEW.evidence_json) citation
@@ -1182,5 +1203,20 @@ SET next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at)
 WHERE next_attempt_at GLOB '????-??-?? ??:??:??*'
   AND strftime('%Y-%m-%dT%H:%M:%fZ', next_attempt_at) IS NOT NULL;
 
-INSERT INTO schema_meta(key, value) VALUES ('schema_version', '16')
+-- Framework v1 records remain immutable. Any unreleased ready item using one
+-- is moved back to the framework stage so it cannot bypass the v2 contract.
+UPDATE historical_backfill_items
+SET stage = 'lifecycle_verified',
+    analysis_json = json_remove(analysis_json, '$.frameworkVersionId', '$.frameworkVersion'),
+    last_error = 'policy judgment framework v2 required',
+    next_attempt_at = NULL,
+    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+WHERE stage = 'ready' AND analysis_status = 'verified'
+  AND EXISTS (
+    SELECT 1 FROM historical_analysis_frameworks framework
+    WHERE framework.id = CAST(json_extract(historical_backfill_items.analysis_json, '$.frameworkVersionId') AS INTEGER)
+      AND framework.prompt_version <> 'analyze-historical-policy-v2'
+  );
+
+INSERT INTO schema_meta(key, value) VALUES ('schema_version', '17')
 ON CONFLICT(key) DO UPDATE SET value = excluded.value;

@@ -60,12 +60,26 @@ function createHumanReadyItem(db, suffix) {
   const reference = [{ source_id: `item:${itemId}`, quote }];
   const frameworkPayload = {
     bottom_line: '该样本只用于验证发布门禁，不外推政策效果。',
+    final_conclusion: {
+      text: '该样本只证明受控发布流程完整，不支持外推政策效果。',
+      evidence_refs: reference
+    },
     policy_problem: { text: '验证历史政策首批发布的完整流程。', evidence_refs: reference },
     policy_tools: [{ label: '人工复核', detail: '通过人工复核确认发布边界。', evidence_refs: reference }],
     affected_groups: [{ label: '审核人员', detail: '审核人员负责确认引用和边界。', evidence_refs: reference }],
     execution_path: [{ label: '审核发布', detail: '先完成审核，再进入受控发布。', evidence_refs: reference }],
     historical_comparison: [],
-    history_boundary: '回归样本没有前序政策关系。'
+    history_boundary: '回归样本没有前序政策关系。',
+    forward_signals: [{
+      signal: '下一步将进入首批受控发布复核。',
+      basis: '样本已经完成正式原文和人工审核记录。',
+      time_window: '首批发布窗口',
+      expected_by: null,
+      confidence: 0.7,
+      prerequisites: '首批队列通过负载和完整性检查。',
+      disconfirming_evidence: '回归检查失败或审核记录失效。',
+      evidence_refs: reference
+    }]
   };
   const normalizedFramework = normalizeHistoricalFramework(frameworkPayload, evidenceBundle, analysis);
   const framework = storeFrameworkVersion(

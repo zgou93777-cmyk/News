@@ -203,6 +203,10 @@ test('human review requires official evidence and a complete cycle/implementatio
     },
     framework: {
       bottom_line: '政策已经建立测试制度，但结果证据仍不完整。',
+      final_conclusion: {
+        text: '测试制度已经进入实施，但结果证据仍不足，暂不能判断完整成效。',
+        evidence_refs: [{ source_id: 'review:implementation:0', quote: '自2000年2月1日起施行。' }]
+      },
       policy_problem: {
         text: '建立测试制度并明确实施边界。',
         evidence_refs: [{ source_id: 'review:implementation:0', quote: '自2000年2月1日起施行。' }]
@@ -220,7 +224,17 @@ test('human review requires official evidence and a complete cycle/implementatio
         evidence_refs: [{ source_id: 'review:implementation:0', quote: '自2000年2月1日起施行。' }]
       }],
       historical_comparison: [],
-      history_boundary: '没有提供已核验前序政策，不作历史对比。'
+      history_boundary: '没有提供已核验前序政策，不作历史对比。',
+      forward_signals: [{
+        signal: '下一步需要出现连续官方结果数据。',
+        basis: '制度已经正式施行，但结果证据仍未闭合。',
+        time_window: '下一年度结果发布周期',
+        expected_by: null,
+        confidence: 0.6,
+        prerequisites: '主管部门持续发布实施结果。',
+        disconfirming_evidence: '正式文件终止制度或结果数据证明制度未继续执行。',
+        evidence_refs: [{ source_id: 'review:implementation:0', quote: '自2000年2月1日起施行。' }]
+      }]
     },
     reviewNotes: '逐项核对原文、实施细则和统计口径；结果仍待后续证据。',
     reviewedBy: 'editor-1',

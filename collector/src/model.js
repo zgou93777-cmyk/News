@@ -85,6 +85,13 @@ function historicalChanges(value) {
   }).filter(Boolean);
 }
 
+function sectionText(value) {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return asText(value.text || value.conclusion || value.narrative || value.detail);
+  }
+  return asText(value);
+}
+
 function normalizeModelAnalysis(payload, document, modelName, fallbackAnalysis) {
   const summary = asText(payload.summary).slice(0, 500) || fallbackAnalysis.summary;
   const facts = arrayValue(payload.facts).slice(0, 12);
@@ -109,17 +116,28 @@ function normalizeModelAnalysis(payload, document, modelName, fallbackAnalysis) 
     if (typeof forecast === 'string') {
       return {
         statement: forecast.slice(0, 500), basis: '模型依据输入原文生成，需后续官方证据复核。',
-        expectedBy: null, confidence: 0.5, status: 'pending', verificationNote: '模型辅助预测，未验证。'
+        timeWindow: '后续观察', expectedBy: null, confidence: 0.5,
+        prerequisites: '政策责任部门继续推进后续执行。',
+        disconfirmingEvidence: '后续正式文件、执行数据或结果与该判断相反。',
+        status: 'pending', verificationNote: '模型辅助预测，未验证。'
       };
     }
-    const expected = asText(forecast?.expected_by || forecast?.expectedBy || forecast?.time_window);
+    const timeWindow = asText(forecast?.time_window || forecast?.timeWindow || forecast?.window);
+    const expected = asText(forecast?.expected_by || forecast?.expectedBy);
+    const prerequisites = asText(forecast?.prerequisites || forecast?.preconditions || forecast?.condition);
+    const disconfirmingEvidence = asText(
+      forecast?.disproof_condition || forecast?.disconfirming_evidence || forecast?.counterevidence
+    ) || '后续正式文件、执行数据或结果与该判断相反。';
     return {
       statement: asText(forecast?.statement || forecast?.event).slice(0, 500),
-      basis: asText(forecast?.basis || forecast?.condition || forecast?.precondition).slice(0, 1000),
+      basis: asText(forecast?.basis || forecast?.reason).slice(0, 1000),
+      timeWindow: timeWindow.slice(0, 160) || (expected ? `截至 ${expected}` : '后续观察'),
       expectedBy: /^20\d{2}-\d{2}-\d{2}$/.test(expected) ? expected : null,
       confidence: boundedConfidence(forecast?.confidence, 0.5),
+      prerequisites: prerequisites.slice(0, 1000) || '政策责任部门按原文继续推进后续执行。',
+      disconfirmingEvidence: disconfirmingEvidence.slice(0, 1000),
       status: 'pending',
-      verificationNote: `反证条件：${asText(forecast?.disproof_condition || forecast?.counterevidence || '需用后续正式文件和执行数据复核。')}`.slice(0, 1000)
+      verificationNote: `反证条件：${disconfirmingEvidence}`.slice(0, 1000)
     };
   }).filter((item) => item.statement);
 
@@ -140,7 +158,19 @@ function normalizeModelAnalysis(payload, document, modelName, fallbackAnalysis) 
   const affectedGroups = structuredItems(frameworkInput.affected_groups || frameworkInput.affectedGroups);
   const executionPath = structuredItems(frameworkInput.execution_path || frameworkInput.executionPath);
   const comparison = historicalChanges(frameworkInput.historical_comparison || frameworkInput.historicalChanges);
-  const frameworkReady = Boolean(problem && tools.length && affectedGroups.length && executionPath.length);
+  const finalConclusion = sectionText(frameworkInput.final_conclusion || frameworkInput.finalConclusion)
+    .slice(0, 1500)
+    || asText(frameworkInput.bottom_line || frameworkInput.bottomLine || payload.summary).slice(0, 1000)
+    || summary;
+  const evolutionNarrative = sectionText(
+    frameworkInput.evolution_narrative || frameworkInput.evolutionNarrative
+  ).slice(0, 2000);
+  const implementationInput = frameworkInput.implementation_assessment
+    || frameworkInput.implementationAssessment || {};
+  const frameworkReady = Boolean(
+    problem && tools.length && affectedGroups.length && executionPath.length
+      && finalConclusion && forecasts.length
+  );
   const confirmed = factSignals.map((fact) => fact.evidenceQuote).slice(0, 8);
   const unconfirmed = ambiguities.map((item) => item.description).slice(0, 8);
 
@@ -157,19 +187,40 @@ function normalizeModelAnalysis(payload, document, modelName, fallbackAnalysis) 
       : '模型未返回可挂接的原文事实，保留规则分析证据。',
     framework: {
       ready: frameworkReady,
-      perspective: '公共政策执行与实际影响',
-      perspectiveNote: '从政策公开目标出发，依次核对政策工具、执行责任、受影响对象和实际结果；不从宣传口径、行业立场或资产涨跌角度评价政策。',
+      perspective: '政策演进、实际落地与下一步方向',
+      perspectiveNote: '从政策含义出发，比较历史变化，核对实施、资金和结果，再基于公开依据判断下一步；不把政策表态、市场反应或行业愿望当成兑现事实。',
       bottomLine: asText(frameworkInput.bottom_line || frameworkInput.bottomLine || payload.summary).slice(0, 1000) || summary,
+      finalConclusion,
       problem,
       tools,
       affectedGroups,
       executionPath,
       historicalChanges: comparison,
+      evolutionNarrative,
+      implementationAssessment: {
+        policyRelease: { status: 'confirmed', conclusion: '正式政策文本已经收录。', evidence: confirmed },
+        implementation: { status: 'unknown', conclusion: '当前输入不含独立的后续实施证据。', evidence: [] },
+        funding: { status: 'unknown', conclusion: '当前输入不含独立的实际资金或项目证据。', evidence: [] },
+        outcomes: { status: 'unknown', conclusion: '当前输入不含独立的结果证据。', evidence: [] },
+        realizationStatus: 'watching',
+        conclusion: sectionText(implementationInput.conclusion || implementationInput)
+          .slice(0, 1500) || '政策已经发布，实施、资金和结果仍需后续官方材料确认。'
+      },
+      forwardSignals: forecasts.map((forecast) => ({
+        signal: forecast.statement,
+        basis: forecast.basis,
+        timeWindow: forecast.timeWindow,
+        expectedBy: forecast.expectedBy,
+        confidence: forecast.confidence,
+        prerequisites: forecast.prerequisites,
+        disconfirmingEvidence: forecast.disconfirmingEvidence,
+        evidence: []
+      })),
       confirmed,
       unconfirmed
     },
     modelName: `openai-compatible:${modelName}`,
-    promptVersion: 'analyze-policy-v2',
+    promptVersion: 'analyze-policy-v3',
     signals: factSignals.length ? factSignals : fallbackAnalysis.signals,
     forecasts,
     ambiguities: [...fallbackAnalysis.ambiguities, ...ambiguities]

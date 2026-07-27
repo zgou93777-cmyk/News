@@ -553,11 +553,15 @@ function getArticleDetail(db, id) {
   const hasOpenAmbiguity = ambiguities.some((item) => ['open', 'watching', 'disputed'].includes(item.status));
   const hasVerifiedForecast = currentForecasts.some((item) => item.status === 'verified');
   const hasPartialForecast = currentForecasts.some((item) => item.status === 'partially_verified');
+  const frameworkConclusion = currentAnalysis?.framework?.finalConclusion
+    || currentAnalysis?.framework?.implementationAssessment?.conclusion
+    || currentAnalysis?.framework?.bottomLine;
   article.review = {
     status: hasOpenAmbiguity
       ? 'ambiguous'
       : row.historical_review_status || (hasVerifiedForecast ? 'verified' : hasPartialForecast ? 'partial' : 'watching'),
-    conclusion: latestAssessment?.conclusion || currentAnalysis?.evidenceSummary || '尚待更多公开证据验证。',
+    conclusion: frameworkConclusion || latestAssessment?.conclusion
+      || currentAnalysis?.evidenceSummary || '尚待更多公开证据验证。',
     verifiedAt: latestAssessment?.asOfDate || currentAnalysis?.createdAt || article.publishedAt,
     confidence: row.historical_review_confidence != null
       ? `${Math.round(Number(row.historical_review_confidence) * 100)}%`
@@ -602,11 +606,31 @@ function getArticleDetail(db, id) {
     severity: item.severity,
     status: item.status
   }));
-  article.predictions = currentForecasts.map((item) => ({
+  const frameworkSignals = Array.isArray(currentAnalysis?.framework?.forwardSignals)
+    ? currentAnalysis.framework.forwardSignals
+    : [];
+  article.predictions = frameworkSignals.length ? frameworkSignals.map((item) => ({
+    timeframe: item.timeWindow || (item.expectedBy ? `截至 ${item.expectedBy}` : '后续观察'),
+    expectedBy: item.expectedBy || null,
+    signal: item.signal,
+    basis: item.basis,
+    trigger: item.basis,
+    confidence: Number.isFinite(Number(item.confidence))
+      ? `${Math.round(Number(item.confidence) * 100)}%`
+      : '待评估',
+    prerequisites: item.prerequisites || '',
+    disconfirmingEvidence: item.disconfirmingEvidence || '',
+    evidence: Array.isArray(item.evidence) ? item.evidence : [],
+    status: item.status || 'pending'
+  })) : currentForecasts.map((item) => ({
     timeframe: item.expectedBy ? `截至 ${item.expectedBy}` : '后续观察',
+    expectedBy: item.expectedBy,
     signal: item.statement,
-    trigger: `${item.basis}${item.verificationNote ? ` 验证状态：${item.verificationNote}` : ''}`,
+    basis: item.basis,
+    trigger: item.basis,
     confidence: `${Math.round(item.confidence * 100)}%`,
+    prerequisites: '相关责任部门发布正式文件，并进入可核验的执行环节。',
+    disconfirmingEvidence: item.verificationNote || '',
     status: item.status
   }));
 

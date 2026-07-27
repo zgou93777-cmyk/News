@@ -216,8 +216,8 @@ function seedDatabase(db) {
       createdAt: '2026-07-20T08:30:00+08:00'
     });
 
-    const perspective = '公共政策执行与实际影响';
-    const perspectiveNote = '从政策公开目标出发，依次核对政策工具、执行责任、受影响对象和实际结果；不从宣传口径、行业立场或资产涨跌角度评价政策。';
+    const perspective = '政策演进、实际落地与下一步方向';
+    const perspectiveNote = '从政策含义出发，比较历史变化，核对实施、资金和结果，再基于公开证据判断下一步；不把政策表态、市场反应或行业愿望当成兑现事实。';
     insertFrameworkIfMissing(db, historicalAnalysisId, {
       ready: true,
       perspective,
