@@ -1,6 +1,8 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { after, before, test } = require('node:test');
 const { openDatabase } = require('../src/db');
@@ -10,18 +12,35 @@ const { seedDatabase } = require('../src/seed');
 let db;
 let server;
 let origin;
+let adminDirectory;
+let lastModelAuthorization = '';
+
+const ADMIN_TOKEN = 'test-admin-token-1234567890-1234567890';
 
 before(async () => {
   db = openDatabase(':memory:');
   seedDatabase(db);
+  adminDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'policy-admin-api-'));
   server = createHttpServer({
     db,
     config: {
       frontendDir: path.resolve(__dirname, '..', '..', 'frontend'),
+      modelConfigPath: path.join(adminDirectory, 'model-config.json'),
+      adminToken: ADMIN_TOKEN,
       maxBodyBytes: 32 * 1024,
       vapidSubject: 'mailto:test@example.com',
       vapidPublicKey: 'test-public-key',
       vapidPrivateKey: 'test-private-key'
+    },
+    modelEnv: {},
+    modelFetchImpl: async (_url, request) => {
+      lastModelAuthorization = request.headers.Authorization;
+      const body = JSON.parse(request.body);
+      if (body.model === 'missing-model') return new Response('', { status: 404 });
+      return new Response(JSON.stringify({
+        model: body.model,
+        choices: [{ message: { content: '{"ok":true}' } }]
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
     }
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -32,6 +51,7 @@ before(async () => {
 after(async () => {
   await new Promise((resolve) => server.close(resolve));
   db.close();
+  fs.rmSync(adminDirectory, { recursive: true, force: true });
 });
 
 test('health and categories expose database state', async () => {
@@ -65,6 +85,48 @@ test('health selects the newest sync run by insertion order across timestamp for
   } finally {
     db.prepare('DELETE FROM sync_runs WHERE id IN (?, ?)').run(olderId, latestId);
   }
+});
+
+test('admin model configuration requires a token and never returns the API key', async () => {
+  const unauthorized = await fetch(`${origin}/api/admin/model-config`);
+  assert.equal(unauthorized.status, 401);
+
+  const headers = { Authorization: `Bearer ${ADMIN_TOKEN}`, 'Content-Type': 'application/json' };
+  const initial = await fetch(`${origin}/api/admin/model-config`, { headers });
+  assert.equal(initial.status, 200);
+  assert.equal((await initial.json()).data.configured, false);
+
+  const candidate = {
+    baseUrl: 'https://relay.example/v1', apiKey: 'relay-secret-key', modelName: 'relay-model'
+  };
+  const testResponse = await fetch(`${origin}/api/admin/model-config`, {
+    method: 'POST', headers, body: JSON.stringify(candidate)
+  });
+  assert.equal(testResponse.status, 200);
+  assert.equal((await testResponse.json()).data.connection.ok, true);
+  assert.equal(fs.existsSync(path.join(adminDirectory, 'model-config.json')), false);
+
+  const saveResponse = await fetch(`${origin}/api/admin/model-config`, {
+    method: 'PUT', headers, body: JSON.stringify(candidate)
+  });
+  assert.equal(saveResponse.status, 200);
+  const savedText = await saveResponse.text();
+  assert.doesNotMatch(savedText, /relay-secret-key/);
+  const saved = JSON.parse(savedText).data;
+  assert.equal(saved.config.source, 'managed');
+  assert.equal(saved.config.hasApiKey, true);
+  assert.equal(lastModelAuthorization, 'Bearer relay-secret-key');
+
+  const failedSave = await fetch(`${origin}/api/admin/model-config`, {
+    method: 'PUT', headers,
+    body: JSON.stringify({ baseUrl: candidate.baseUrl, modelName: 'missing-model', apiKey: '' })
+  });
+  assert.equal(failedSave.status, 422);
+  assert.equal((await failedSave.json()).error.details.connection.category, 'endpoint_or_model_not_found');
+
+  const current = await (await fetch(`${origin}/api/admin/model-config`, { headers })).json();
+  assert.equal(current.data.modelName, 'relay-model');
+  assert.doesNotMatch(JSON.stringify(current), /relay-secret-key/);
 });
 
 test('article list supports search, filters and pagination', async () => {

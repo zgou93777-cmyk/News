@@ -6,6 +6,14 @@ const http = require('node:http');
 const path = require('node:path');
 const { getSchemaVersion } = require('./db');
 const {
+  completionsUrl,
+  hasModelConfig,
+  loadModelConfigState,
+  testModelConnection,
+  validateModelConfig,
+  writeModelConfig
+} = require('./model-config');
+const {
   getArchiveOverview,
   getArticleDetail,
   listArticles,
@@ -51,7 +59,7 @@ function applySecurityHeaders(res, requestId) {
   res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=()');
   res.setHeader(
     'Content-Security-Policy',
-    "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self' https://unpkg.com; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'"
+    "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; font-src 'self'; manifest-src 'self'; worker-src 'self'"
   );
 }
 
@@ -75,6 +83,78 @@ function sendError(res, error, requestId) {
     payload.error.details = error.details;
   }
   sendJson(res, status, payload);
+}
+
+function readAdminToken(config) {
+  const configured = String(config.adminToken || '').trim();
+  if (configured) return configured;
+  try {
+    return fs.readFileSync(config.adminTokenPath, 'utf8').trim();
+  } catch (error) {
+    if (error.code === 'ENOENT') return '';
+    throw error;
+  }
+}
+
+function requireAdmin(req, config) {
+  const expected = readAdminToken(config);
+  if (expected.length < 32) {
+    throw new HttpError(503, 'ADMIN_DISABLED', '管理后台尚未初始化访问口令');
+  }
+  const match = String(req.headers.authorization || '').match(/^Bearer ([\x21-\x7e]{16,512})$/);
+  const provided = match?.[1] || '';
+  const expectedHash = crypto.createHash('sha256').update(expected).digest();
+  const providedHash = crypto.createHash('sha256').update(provided).digest();
+  if (!crypto.timingSafeEqual(expectedHash, providedHash)) {
+    throw new HttpError(401, 'ADMIN_UNAUTHORIZED', '管理口令无效');
+  }
+}
+
+function createWindowLimiter(maximum, windowMs) {
+  let attempts = [];
+  return () => {
+    const now = Date.now();
+    attempts = attempts.filter((timestamp) => timestamp > now - windowMs);
+    if (attempts.length >= maximum) {
+      throw new HttpError(429, 'ADMIN_RATE_LIMITED', '连接测试过于频繁，请稍后重试');
+    }
+    attempts.push(now);
+  };
+}
+
+function publicModelConfig(state) {
+  const { config } = state;
+  return {
+    configured: hasModelConfig(config),
+    baseUrl: config.baseUrl || '',
+    endpoint: config.baseUrl ? completionsUrl(config.baseUrl) : '',
+    modelName: config.modelName || '',
+    hasApiKey: Boolean(config.apiKey),
+    source: state.source,
+    updatedAt: state.updatedAt
+  };
+}
+
+function submittedModelConfig(body, current) {
+  const apiKey = typeof body.apiKey === 'string' && body.apiKey.trim()
+    ? body.apiKey.trim() : current.config.apiKey;
+  try {
+    return validateModelConfig({
+      baseUrl: body.baseUrl,
+      modelName: body.modelName,
+      apiKey
+    }, { requireApiKey: true });
+  } catch (error) {
+    let message = '模型配置格式无效';
+    if (error.message.startsWith('MODEL_BASE_URL')) {
+      message = '接口地址必须是公网 HTTPS 地址，不能包含账号、查询参数或片段';
+    } else if (error.message.startsWith('MODEL_NAME')) {
+      message = '模型名称不能为空，且不能超过 160 个字符';
+    } else if (error.message.startsWith('MODEL_API_KEY')) {
+      message = 'API Key 不能为空，且不能包含空格或控制字符';
+    }
+    throw new HttpError(400, 'INVALID_MODEL_CONFIG', message);
+  }
 }
 
 function singleQueryValue(searchParams, name) {
@@ -482,6 +562,36 @@ async function routeApi(req, res, url, context) {
     return true;
   }
 
+  if (url.pathname === '/api/admin/model-config') {
+    requireAdmin(req, config);
+    const current = loadModelConfigState(context.modelEnv, { filePath: config.modelConfigPath });
+    if (req.method === 'GET') {
+      sendJson(res, 200, { data: publicModelConfig(current) });
+      return true;
+    }
+    if (req.method === 'POST') {
+      context.adminTestLimiter();
+      const body = await readJsonBody(req, config.maxBodyBytes);
+      const candidate = submittedModelConfig(body, current);
+      const connection = await testModelConnection(candidate, { fetchImpl: context.modelFetchImpl });
+      sendJson(res, 200, { data: { connection } });
+      return true;
+    }
+    if (req.method === 'PUT') {
+      context.adminTestLimiter();
+      const body = await readJsonBody(req, config.maxBodyBytes);
+      const candidate = submittedModelConfig(body, current);
+      const connection = await testModelConnection(candidate, { fetchImpl: context.modelFetchImpl });
+      if (!connection.ok) {
+        throw new HttpError(422, 'MODEL_TEST_FAILED', '连接测试未通过，当前配置未被修改', { connection });
+      }
+      const saved = writeModelConfig(config.modelConfigPath, candidate, { updatedBy: 'admin-ui' });
+      sendJson(res, 200, { data: { config: publicModelConfig(saved), connection } });
+      return true;
+    }
+    throw new HttpError(405, 'METHOD_NOT_ALLOWED', '该管理接口仅支持 GET、POST 和 PUT');
+  }
+
   if (req.method === 'POST' && url.pathname === '/api/push/subscribe') {
     if (!config.vapidPublicKey || !config.vapidPrivateKey || !config.vapidSubject) {
       throw new HttpError(503, 'PUSH_NOT_CONFIGURED', '服务器尚未配置网页推送');
@@ -507,7 +617,7 @@ async function routeApi(req, res, url, context) {
   }
 
   if (url.pathname.startsWith('/api/')) {
-    if (['GET', 'POST', 'DELETE'].includes(req.method)) {
+    if (['GET', 'POST', 'PUT', 'DELETE'].includes(req.method)) {
       throw new HttpError(404, 'API_NOT_FOUND', '接口不存在');
     }
     throw new HttpError(405, 'METHOD_NOT_ALLOWED', '请求方法不受支持');
@@ -593,14 +703,17 @@ async function serveStatic(req, res, url, frontendDir) {
   });
 }
 
-function createHttpServer({ db, config }) {
+function createHttpServer({ db, config, modelFetchImpl = fetch, modelEnv = process.env }) {
   if (!db || !config) throw new TypeError('db and config are required');
+  const adminTestLimiter = createWindowLimiter(12, 60_000);
   const server = http.createServer(async (req, res) => {
     const requestId = crypto.randomUUID();
     applySecurityHeaders(res, requestId);
     try {
       const url = new URL(req.url || '/', 'http://localhost');
-      const handled = await routeApi(req, res, url, { db, config });
+      const handled = await routeApi(req, res, url, {
+        db, config, modelFetchImpl, modelEnv, adminTestLimiter
+      });
       if (!handled) await serveStatic(req, res, url, config.frontendDir);
     } catch (error) {
       if (!res.headersSent) sendError(res, error, requestId);

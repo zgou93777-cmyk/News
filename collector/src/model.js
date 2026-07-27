@@ -3,24 +3,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const {
+  completionsUrl,
+  hasModelConfig,
+  loadModelConfig
+} = require('../../server/src/model-config');
+
 const DEFAULT_PROMPT_PATH = path.resolve(__dirname, '..', '..', 'prompts', 'analyze-policy.md');
-
-function loadModelConfig(env = process.env) {
-  return {
-    baseUrl: String(env.MODEL_BASE_URL || '').trim(),
-    apiKey: String(env.MODEL_API_KEY || '').trim(),
-    modelName: String(env.MODEL_NAME || '').trim()
-  };
-}
-
-function hasModelConfig(config) {
-  return Boolean(config.baseUrl && config.apiKey && config.modelName);
-}
-
-function completionsUrl(baseUrl) {
-  const value = baseUrl.replace(/\/+$/, '');
-  return /\/chat\/completions$/i.test(value) ? value : `${value}/chat/completions`;
-}
 
 function parseJsonContent(value) {
   const trimmed = String(value || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');

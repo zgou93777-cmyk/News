@@ -19,12 +19,17 @@ function resolveFromServerRoot(value, fallback) {
 }
 
 function loadConfig() {
+  const dbPath = resolveFromServerRoot(process.env.DB_PATH, 'data/policy-monitor.db');
+  const dataDir = path.dirname(dbPath);
   return Object.freeze({
     host: process.env.HOST || '127.0.0.1',
     port: integerFromEnv('PORT', 5191, 1, 65535),
-    dbPath: resolveFromServerRoot(process.env.DB_PATH, 'data/policy-monitor.db'),
+    dbPath,
     historicalCacheDir: resolveFromServerRoot(process.env.HISTORICAL_CACHE_DIR, 'data/historical-cache'),
     frontendDir: resolveFromServerRoot(process.env.FRONTEND_DIR, '../frontend'),
+    modelConfigPath: path.resolve(process.env.MODEL_CONFIG_PATH || path.join(dataDir, 'model-config.json')),
+    adminTokenPath: path.resolve(process.env.ADMIN_TOKEN_FILE || path.join(dataDir, 'admin-token')),
+    adminToken: String(process.env.ADMIN_TOKEN || '').trim(),
     maxBodyBytes: integerFromEnv('MAX_BODY_BYTES', 32 * 1024, 1024, 1024 * 1024),
     vapidSubject: process.env.VAPID_SUBJECT || '',
     vapidPublicKey: process.env.VAPID_PUBLIC_KEY || '',

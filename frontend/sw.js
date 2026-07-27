@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE_VERSION = "policy-monitor-v12";
+const CACHE_VERSION = "policy-monitor-v14";
 const SCOPE_URL = new URL(self.registration.scope);
 const SHELL_URLS = [
   new URL("./", SCOPE_URL).toString(),
@@ -8,6 +8,7 @@ const SHELL_URLS = [
   new URL("styles.css?v=20260727-judgment3", SCOPE_URL).toString(),
   new URL("app.js?v=20260727-judgment3", SCOPE_URL).toString(),
   new URL("manifest.webmanifest?v=20260720", SCOPE_URL).toString(),
+  new URL("assets/lucide-0.468.0.min.js", SCOPE_URL).toString(),
   new URL("assets/icon.svg", SCOPE_URL).toString(),
   new URL("assets/icon-180.png", SCOPE_URL).toString(),
   new URL("assets/icon-192.png", SCOPE_URL).toString(),
@@ -51,6 +52,12 @@ self.addEventListener("fetch", (event) => {
 
   const url = new URL(request.url);
   if (url.origin !== SCOPE_URL.origin || !url.pathname.startsWith(SCOPE_URL.pathname)) return;
+
+  if (url.pathname.startsWith(`${SCOPE_URL.pathname}admin/`)
+    || url.pathname.startsWith(`${SCOPE_URL.pathname}api/admin/`)) {
+    event.respondWith(fetch(request));
+    return;
+  }
 
   if (request.mode === "navigate") {
     event.respondWith(networkFirst(request, new URL("index.html", SCOPE_URL).toString()));

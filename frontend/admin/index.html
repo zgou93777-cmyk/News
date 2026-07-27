@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="robots" content="noindex, nofollow, noarchive">
+    <meta name="theme-color" content="#202522">
+    <title>模型配置 · 政知镜管理</title>
+    <link rel="icon" href="../assets/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="admin.css?v=20260727-3">
+    <script defer src="../assets/lucide-0.468.0.min.js"></script>
+    <script defer src="admin.js?v=20260727-1"></script>
+  </head>
+  <body>
+    <header class="admin-header">
+      <div class="admin-width header-inner">
+        <a class="admin-brand" href="../#/" aria-label="返回政知镜首页">
+          <span class="brand-mark">政</span>
+          <span><strong>政知镜</strong><small>系统管理</small></span>
+        </a>
+        <div class="header-actions">
+          <a class="icon-button" href="../#/" title="返回网站" aria-label="返回网站">
+            <i data-lucide="external-link" aria-hidden="true"></i>
+          </a>
+          <button class="icon-button" id="logout-button" type="button" title="退出管理" aria-label="退出管理" hidden>
+            <i data-lucide="log-out" aria-hidden="true"></i>
+          </button>
+        </div>
+      </div>
+    </header>
+
+    <main class="admin-main">
+      <section class="login-section admin-width" id="login-section">
+        <form class="login-panel" id="login-form">
+          <div class="section-icon" aria-hidden="true"><i data-lucide="shield-check"></i></div>
+          <p class="eyebrow">受保护区域</p>
+          <h1>模型配置后台</h1>
+          <label for="admin-token">管理口令</label>
+          <div class="secret-input">
+            <input id="admin-token" name="adminToken" type="password" autocomplete="current-password" required>
+            <button class="input-icon" type="button" data-toggle-secret="admin-token" title="显示或隐藏口令" aria-label="显示或隐藏口令">
+              <i data-lucide="eye" aria-hidden="true"></i>
+            </button>
+          </div>
+          <button class="primary-button full-button" type="submit">
+            <i data-lucide="log-in" aria-hidden="true"></i><span>进入后台</span>
+          </button>
+          <p class="form-message" id="login-message" role="status" aria-live="polite"></p>
+        </form>
+      </section>
+
+      <div class="admin-workspace" id="admin-workspace" hidden>
+        <section class="workspace-heading admin-width">
+          <div>
+            <p class="eyebrow">模型服务</p>
+            <h1>OpenAI 兼容接口</h1>
+          </div>
+          <div class="configuration-status" id="configuration-status">
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="configuration-status-text">读取配置中</span>
+          </div>
+        </section>
+
+        <section class="status-band">
+          <div class="admin-width status-grid">
+            <div><span>配置来源</span><strong id="config-source">--</strong></div>
+            <div><span>密钥状态</span><strong id="key-status">--</strong></div>
+            <div><span>最后更新</span><strong id="updated-at">--</strong></div>
+          </div>
+        </section>
+
+        <section class="config-section admin-width">
+          <form id="model-config-form">
+            <div class="form-heading">
+              <div>
+                <h2>连接参数</h2>
+                <p id="endpoint-preview">等待填写接口地址</p>
+              </div>
+              <i data-lucide="waypoints" aria-hidden="true"></i>
+            </div>
+
+            <div class="field-grid">
+              <div class="field wide-field">
+                <label for="model-base-url">中转站接口地址</label>
+                <input id="model-base-url" name="baseUrl" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/v1" required>
+              </div>
+              <div class="field">
+                <label for="model-name">模型名称</label>
+                <input id="model-name" name="modelName" type="text" autocomplete="off" spellcheck="false" placeholder="gpt-5" required>
+              </div>
+              <div class="field">
+                <label for="model-api-key">API Key</label>
+                <div class="secret-input">
+                  <input id="model-api-key" name="apiKey" type="password" autocomplete="new-password" spellcheck="false" placeholder="留空则保持当前密钥">
+                  <button class="input-icon" type="button" data-toggle-secret="model-api-key" title="显示或隐藏密钥" aria-label="显示或隐藏密钥">
+                    <i data-lucide="eye" aria-hidden="true"></i>
+                  </button>
+                </div>
+                <small id="api-key-note">尚未读取密钥状态</small>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button class="secondary-button" id="test-button" type="button">
+                <i data-lucide="plug-zap" aria-hidden="true"></i><span>测试连接</span>
+              </button>
+              <button class="primary-button" id="save-button" type="submit">
+                <i data-lucide="save" aria-hidden="true"></i><span>保存并启用</span>
+              </button>
+            </div>
+          </form>
+        </section>
+
+        <section class="result-section admin-width" aria-labelledby="test-result-title">
+          <div class="result-heading">
+            <div>
+              <p class="eyebrow">连接检测</p>
+              <h2 id="test-result-title">最近一次结果</h2>
+            </div>
+            <span class="result-badge is-idle" id="result-badge">尚未测试</span>
+          </div>
+          <div class="result-content" id="result-content">
+            <i data-lucide="activity" aria-hidden="true"></i>
+            <div>
+              <strong id="result-message">等待连接测试</strong>
+              <p id="result-details">--</p>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>

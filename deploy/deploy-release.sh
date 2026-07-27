@@ -14,6 +14,8 @@ RELEASE_ARCHIVE=$(readlink -f "$1")
 APP_DIR=${APP_DIR:-/opt/policy-monitor}
 DATA_DIR=${DATA_DIR:-/var/lib/policy-monitor}
 DB_PATH=${DB_PATH:-${DATA_DIR}/policy-monitor.db}
+ADMIN_TOKEN_PATH=${ADMIN_TOKEN_PATH:-${DATA_DIR}/admin-token}
+MODEL_CONFIG_PATH=${MODEL_CONFIG_PATH:-${DATA_DIR}/model-config.json}
 BACKUP_ROOT=${BACKUP_ROOT:-/var/backups/policy-monitor}
 NODE_BIN=${NODE_BIN:-/usr/local/bin/node}
 NPM_BIN=${NPM_BIN:-/usr/local/bin/npm}
@@ -43,7 +45,7 @@ on_error() {
 trap cleanup EXIT
 trap on_error ERR
 
-for command in "$NODE_BIN" "$NPM_BIN" systemctl tar curl install cp; do
+for command in "$NODE_BIN" "$NPM_BIN" systemctl tar curl install cp chown; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "Required command not found: ${command}" >&2
     exit 69
@@ -70,7 +72,8 @@ fi
   "$NODE_BIN" --test
 )
 
-install -d -m 0750 "$BACKUP_DIR" "$DATA_DIR"
+install -d -m 0750 "$BACKUP_DIR"
+install -d -o policy-monitor -g policy-monitor -m 0750 "$DATA_DIR"
 systemctl stop policy-monitor-collector.timer policy-monitor-historical.timer
 systemctl stop policy-monitor-collector.service policy-monitor-historical.service policy-monitor.service || true
 SERVICES_STOPPED=1
@@ -83,6 +86,11 @@ for database_file in "$DB_PATH" "${DB_PATH}-wal" "${DB_PATH}-shm"; do
     cp -a "$database_file" "$BACKUP_DIR/"
   fi
 done
+for protected_file in "$ADMIN_TOKEN_PATH" "$MODEL_CONFIG_PATH"; do
+  if [[ -f "$protected_file" ]]; then
+    cp -a "$protected_file" "$BACKUP_DIR/"
+  fi
+done
 
 install -d -m 0755 "$APP_DIR"
 tar -xzf "$RELEASE_ARCHIVE" -C "$APP_DIR" --no-same-owner
@@ -92,6 +100,14 @@ chmod -R a+rX "$APP_DIR"
   cd "${APP_DIR}/server"
   "$NPM_BIN" ci --omit=dev
 )
+
+"$NODE_BIN" "${APP_DIR}/server/scripts/init-admin-token.js" --path "$ADMIN_TOKEN_PATH"
+chown policy-monitor:policy-monitor "$ADMIN_TOKEN_PATH"
+chmod 0600 "$ADMIN_TOKEN_PATH"
+if [[ -f "$MODEL_CONFIG_PATH" ]]; then
+  chown policy-monitor:policy-monitor "$MODEL_CONFIG_PATH"
+  chmod 0600 "$MODEL_CONFIG_PATH"
+fi
 
 install -m 0644 "${APP_DIR}/deploy/policy-monitor.service" /etc/systemd/system/policy-monitor.service
 install -m 0644 "${APP_DIR}/deploy/policy-monitor-alert@.service" /etc/systemd/system/policy-monitor-alert@.service
@@ -116,6 +132,8 @@ SERVICES_STOPPED=0
 for _ in {1..20}; do
   if curl --fail --silent --show-error http://127.0.0.1:5191/api/health >/dev/null; then
     echo "Deployment complete; backup: ${BACKUP_DIR}"
+    echo "Admin page: https://xw.wyhn.cc/admin/"
+    echo "Read the admin token locally with: sudo cat ${ADMIN_TOKEN_PATH}"
     exit 0
   fi
   sleep 1
