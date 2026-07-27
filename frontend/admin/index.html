@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <meta name="robots" content="noindex, nofollow, noarchive">
     <meta name="theme-color" content="#202522">
-    <title>模型配置 · 政知镜管理</title>
+    <title>系统管理 · 政知镜</title>
     <link rel="icon" href="../assets/icon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="admin.css?v=20260727-3">
+    <link rel="stylesheet" href="admin.css?v=20260727-4">
     <script defer src="../assets/lucide-0.468.0.min.js?v=2"></script>
-    <script defer src="admin.js?v=20260727-1"></script>
+    <script defer src="admin.js?v=20260727-2"></script>
   </head>
   <body>
     <header class="admin-header">
@@ -34,7 +34,7 @@
         <form class="login-panel" id="login-form">
           <div class="section-icon" aria-hidden="true"><i data-lucide="shield-check"></i></div>
           <p class="eyebrow">受保护区域</p>
-          <h1>模型配置后台</h1>
+          <h1>系统管理后台</h1>
           <label for="admin-token">管理口令</label>
           <div class="secret-input">
             <input id="admin-token" name="adminToken" type="password" autocomplete="current-password" required>
@@ -51,6 +51,76 @@
 
       <div class="admin-workspace" id="admin-workspace" hidden>
         <section class="workspace-heading admin-width">
+          <div>
+            <p class="eyebrow">历史政策流水线</p>
+            <h1>自动处理进度</h1>
+          </div>
+          <div class="progress-actions">
+            <span class="live-status" id="progress-live-status">正在读取</span>
+            <button class="secondary-button compact-button" id="refresh-progress" type="button">
+              <i data-lucide="refresh-cw" aria-hidden="true"></i><span>刷新</span>
+            </button>
+          </div>
+        </section>
+
+        <section class="progress-overview">
+          <div class="admin-width metric-grid" id="progress-metrics">
+            <button type="button" data-progress-group="discovered"><span>已发现</span><strong id="metric-discovered">--</strong><small>政策条目</small></button>
+            <button type="button" data-progress-group="fetched" class="is-active"><span>已抓取</span><strong id="metric-fetched">--</strong><small>原文入库</small></button>
+            <button type="button" data-progress-group="analyzed"><span>已分析</span><strong id="metric-analyzed">--</strong><small>形成判断</small></button>
+            <button type="button" data-progress-group="verified"><span>已核对</span><strong id="metric-verified">--</strong><small>来源与周期</small></button>
+            <button type="button" data-progress-group="ready"><span>预发布</span><strong id="metric-ready">--</strong><small>通过门槛</small></button>
+            <button type="button" data-progress-group="published"><span>已发布</span><strong id="metric-published">--</strong><small>网站可见</small></button>
+          </div>
+        </section>
+
+        <section class="pipeline-band">
+          <div class="admin-width pipeline-grid">
+            <div><span>队列总量</span><strong id="queue-total">--</strong></div>
+            <div><span>近 24 小时处理</span><strong id="updated-last-24h">--</strong></div>
+            <div><span>人工复核</span><strong id="manual-review-count">--</strong></div>
+            <div><span>失败 / 待重试</span><strong id="retry-count">--</strong></div>
+            <div><span>发布门禁</span><strong id="rollout-status">--</strong></div>
+            <div><span>覆盖年份</span><strong id="coverage-years">--</strong></div>
+          </div>
+        </section>
+
+        <section class="progress-section admin-width" aria-labelledby="progress-list-title">
+          <div class="progress-heading">
+            <div>
+              <p class="eyebrow" id="progress-list-eyebrow">已抓取</p>
+              <h2 id="progress-list-title">政策处理清单</h2>
+            </div>
+            <form class="progress-search" id="progress-search-form" role="search">
+              <label class="sr-only" for="progress-search">搜索政策</label>
+              <i data-lucide="search" aria-hidden="true"></i>
+              <input id="progress-search" type="search" maxlength="100" placeholder="标题、来源或原文链接">
+              <button class="icon-button light-icon-button" type="submit" title="搜索" aria-label="搜索">
+                <i data-lucide="arrow-right" aria-hidden="true"></i>
+              </button>
+            </form>
+          </div>
+          <div class="progress-table-wrap">
+            <table class="progress-table">
+              <thead><tr><th>政策</th><th>当前状态</th><th>分析结果</th><th>最近处理</th></tr></thead>
+              <tbody id="progress-list"></tbody>
+            </table>
+            <div class="empty-state" id="progress-empty" hidden>
+              <i data-lucide="inbox" aria-hidden="true"></i>
+              <strong>当前阶段还没有政策</strong>
+            </div>
+          </div>
+          <div class="progress-footer">
+            <span id="progress-range">--</span>
+            <div class="pagination-actions">
+              <button class="icon-button light-icon-button" id="previous-page" type="button" title="上一页" aria-label="上一页"><i data-lucide="chevron-left" aria-hidden="true"></i></button>
+              <span id="progress-page">--</span>
+              <button class="icon-button light-icon-button" id="next-page" type="button" title="下一页" aria-label="下一页"><i data-lucide="chevron-right" aria-hidden="true"></i></button>
+            </div>
+          </div>
+        </section>
+
+        <section class="workspace-heading model-heading admin-width">
           <div>
             <p class="eyebrow">模型服务</p>
             <h1>OpenAI 兼容接口</h1>
