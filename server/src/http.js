@@ -99,10 +99,10 @@ function readAdminToken(config) {
 
 function requireAdmin(req, config) {
   const expected = readAdminToken(config);
-  if (expected.length < 32) {
+  if (expected.length < 10) {
     throw new HttpError(503, 'ADMIN_DISABLED', '管理后台尚未初始化访问口令');
   }
-  const match = String(req.headers.authorization || '').match(/^Bearer ([\x21-\x7e]{16,512})$/);
+  const match = String(req.headers.authorization || '').match(/^Bearer ([\x21-\x7e]{10,512})$/);
   const provided = match?.[1] || '';
   const expectedHash = crypto.createHash('sha256').update(expected).digest();
   const providedHash = crypto.createHash('sha256').update(provided).digest();

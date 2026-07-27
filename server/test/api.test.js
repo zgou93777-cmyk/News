@@ -15,7 +15,7 @@ let origin;
 let adminDirectory;
 let lastModelAuthorization = '';
 
-const ADMIN_TOKEN = 'test-admin-token-1234567890-1234567890';
+const ADMIN_TOKEN = 'test-12345';
 
 before(async () => {
   db = openDatabase(':memory:');

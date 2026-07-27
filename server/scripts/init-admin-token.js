@@ -15,7 +15,7 @@ function initialize(filename) {
   fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o750 });
   if (fs.existsSync(filename)) {
     const current = fs.readFileSync(filename, 'utf8').trim();
-    if (current.length < 32 || current.length > 512 || /[^\x21-\x7e]/.test(current)) {
+    if (current.length < 10 || current.length > 512 || /[^\x21-\x7e]/.test(current)) {
       throw new Error('existing admin token is invalid; refusing to replace it automatically');
     }
     fs.chmodSync(filename, 0o600);
