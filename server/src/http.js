@@ -5,6 +5,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 const { getSchemaVersion } = require('./db');
+const { PROGRESS_GROUPS, historicalProgress } = require('./historical-progress');
 const {
   completionsUrl,
   hasModelConfig,
@@ -231,6 +232,20 @@ function parseArticleFilters(searchParams) {
     page,
     pageSize
   };
+}
+
+function parseHistoricalProgressFilters(searchParams) {
+  const group = singleQueryValue(searchParams, 'group').trim() || 'fetched';
+  const q = singleQueryValue(searchParams, 'q').trim();
+  const page = parsePositiveInteger(singleQueryValue(searchParams, 'page'), 'page', 1, 1_000_000);
+  const pageSize = parsePositiveInteger(singleQueryValue(searchParams, 'pageSize'), 'pageSize', 20, 50);
+  if (!Object.prototype.hasOwnProperty.call(PROGRESS_GROUPS, group)) {
+    throw new HttpError(400, 'INVALID_QUERY', 'group 不是受支持的历史处理阶段');
+  }
+  if (q.length > 100 || /[\u0000-\u001f]/.test(q)) {
+    throw new HttpError(400, 'INVALID_QUERY', 'q 最长为 100 个字符且不能包含控制字符');
+  }
+  return { group, query: q, page, pageSize };
 }
 
 function readJsonBody(req, maxBodyBytes) {
@@ -590,6 +605,14 @@ async function routeApi(req, res, url, context) {
       return true;
     }
     throw new HttpError(405, 'METHOD_NOT_ALLOWED', '该管理接口仅支持 GET、POST 和 PUT');
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/admin/historical-progress') {
+    requireAdmin(req, config);
+    sendJson(res, 200, {
+      data: historicalProgress(db, parseHistoricalProgressFilters(url.searchParams))
+    });
+    return true;
   }
 
   if (req.method === 'POST' && url.pathname === '/api/push/subscribe') {
