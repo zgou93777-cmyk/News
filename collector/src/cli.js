@@ -38,6 +38,7 @@ const VALUE_OPTIONS = new Map([
   ['--family-slug', 'familySlug'], ['--family-title', 'familyTitle'],
   ['--historical-source', 'historicalSource'], ['--historical-sources-file', 'historicalSourcesFile'],
   ['--from-year', 'fromYear'], ['--to-year', 'toYear'], ['--delay-ms', 'delayMs'], ['--min-items', 'minItems'],
+  ['--model-timeout-ms', 'modelTimeoutMs'], ['--model-concurrency', 'modelConcurrency'],
   ['--historical-review', 'historicalReview'], ['--review-file', 'reviewFile'],
   ['--historical-review-export', 'historicalReviewExport'],
   ['--historical-pdf-segment', 'historicalPdfSegment'], ['--segments-file', 'segmentsFile'],
@@ -66,6 +67,7 @@ const HELP = `Usage:
   node src/cli.js --historical-evidence [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-analyze [--adaptive-load] [--max-items 100]
   node src/cli.js --historical-framework [--analysis auto|model] [--adaptive-load] [--max-items 100]
+    [--model-timeout-ms 240000] [--model-concurrency 2]
   node src/cli.js --historical-cohort-audit [--max-items 100]
   node src/cli.js --historical-cohort-approve <cohort-id> --approved-by <id> --approval-note <text>
   node src/cli.js --historical-release [--adaptive-load] [--max-items 100]
@@ -110,6 +112,8 @@ Options:
   --to-year YYYY           Historical discovery upper bound
   --delay-ms N             Delay between historical queue items; default 1500
   --min-items N            Minimum adaptive batch size; default 5
+  --model-timeout-ms N     Historical model request timeout from 30000 to 600000; default 240000
+  --model-concurrency N    Concurrent historical model requests from 1 to 4; default 2
   --ocr-page-budget N      Maximum newly OCRed pages per PDF and run; default 20
   --ocr-languages IDS      Plus-separated Tesseract languages; default chi_sim+chi_tra+eng
   --ocr-dpi N              Scan rendering resolution from 150 to 600; default 300
@@ -185,6 +189,19 @@ function parseArguments(argv) {
     options.delayMs = Number(options.delayMs);
     if (!Number.isSafeInteger(options.delayMs) || options.delayMs < 0 || options.delayMs > 60_000) {
       throw new Error('--delay-ms must be an integer from 0 to 60000');
+    }
+  }
+  for (const [key, flag, minimum, maximum] of [
+    ['modelTimeoutMs', '--model-timeout-ms', 30_000, 600_000],
+    ['modelConcurrency', '--model-concurrency', 1, 4]
+  ]) {
+    if (options[key] === undefined) continue;
+    options[key] = Number(options[key]);
+    if (!Number.isSafeInteger(options[key]) || options[key] < minimum || options[key] > maximum) {
+      throw new Error(`${flag} must be an integer from ${minimum} to ${maximum}`);
+    }
+    if (!options.historicalFramework) {
+      throw new Error(`${flag} is only valid with --historical-framework`);
     }
   }
   if (options.ocrPageBudget !== undefined) {

@@ -18,6 +18,9 @@ const PROMPT_VERSION = 'analyze-historical-policy-v2';
 const MAX_EVIDENCE_SOURCES = 12;
 const MAX_CURRENT_SOURCE_TEXT = 80_000;
 const MAX_RELATED_SOURCE_TEXT = 30_000;
+const DEFAULT_MODEL_TIMEOUT_MS = 240_000;
+const DEFAULT_MODEL_CONCURRENCY = 2;
+const MAX_MODEL_CONCURRENCY = 4;
 
 function safeJson(value, fallback) {
   try {
@@ -482,7 +485,7 @@ async function requestHistoricalFramework(item, assessment, evidenceBundle, mode
     method: 'POST',
     headers: { Authorization: `Bearer ${modelConfig.apiKey}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-    signal: AbortSignal.timeout(options.timeoutMs || 90_000)
+    signal: AbortSignal.timeout(options.modelTimeoutMs || options.timeoutMs || DEFAULT_MODEL_TIMEOUT_MS)
   });
   if (!response.ok) throw new Error(`historical framework model API returned HTTP ${response.status}`);
   const result = await response.json();
@@ -579,13 +582,15 @@ function frameworkQueueItems(db, maximum) {
 }
 
 function updateFrameworkFailure(db, item, message) {
-  const retryHours = Math.min(24, 2 ** Math.min(Number(item.attempts || 0) + 1, 5));
+  const detail = String(message).slice(0, 1000);
+  const transient = /timeout|timed out|HTTP (?:408|429|5\d\d)|network|fetch failed/i.test(detail);
+  const retryDelay = transient ? '+30 minutes' : '+6 hours';
   db.prepare(`
     UPDATE historical_backfill_items SET attempts = attempts + 1, last_error = ?,
       next_attempt_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now', ?),
       updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
     WHERE id = ?
-  `).run(String(message).slice(0, 1000), `+${retryHours} hours`, item.id);
+  `).run(detail, retryDelay, item.id);
 }
 
 async function runHistoricalFrameworkQueue(db, options = {}, dependencies = {}) {
@@ -594,6 +599,12 @@ async function runHistoricalFrameworkQueue(db, options = {}, dependencies = {}) 
   const readLoad = dependencies.loadSnapshot || currentLoadSnapshot;
   const initialLoad = readLoad();
   const capacity = options.adaptiveLoad ? adaptiveBatchSize(maximum, minimum, initialLoad) : maximum;
+  const modelTimeoutMs = options.modelTimeoutMs || DEFAULT_MODEL_TIMEOUT_MS;
+  const modelConcurrency = Math.max(1, Math.min(
+    Number(options.modelConcurrency || DEFAULT_MODEL_CONCURRENCY),
+    MAX_MODEL_CONCURRENCY,
+    capacity
+  ));
   const modelConfig = options.modelConfig || loadModelConfig();
   const mode = options.analysisMode || 'auto';
   const items = frameworkQueueItems(db, maximum);
@@ -605,6 +616,7 @@ async function runHistoricalFrameworkQueue(db, options = {}, dependencies = {}) 
         ? 'rules mode cannot satisfy the cited structured-framework gate'
         : 'model configuration is absent; structured historical items remain private',
       adaptiveLoad: Boolean(options.adaptiveLoad), load: initialLoad, stoppedDueToLoad: false,
+      modelTimeoutMs, modelConcurrency,
       items: [], errors: []
     };
   }
@@ -615,16 +627,10 @@ async function runHistoricalFrameworkQueue(db, options = {}, dependencies = {}) 
     status: 'succeeded', selected: items.length, planned: Math.min(items.length, capacity),
     processed: 0, ready: 0, incomplete: 0, skipped: false,
     adaptiveLoad: Boolean(options.adaptiveLoad), load: initialLoad, stoppedDueToLoad: false,
+    modelTimeoutMs, modelConcurrency,
     items: [], errors: []
   };
-  for (let index = 0; index < items.length; index += 1) {
-    if (options.adaptiveLoad && index >= minimum) {
-      if (index >= adaptiveBatchSize(maximum, minimum, readLoad())) {
-        result.stoppedDueToLoad = true;
-        break;
-      }
-    } else if (index >= capacity) break;
-    const item = items[index];
+  const processItem = async (item) => {
     const assessment = db.prepare('SELECT * FROM historical_analysis_versions WHERE id = ?')
       .get(item.framework_assessment_id);
     try {
@@ -646,7 +652,7 @@ async function runHistoricalFrameworkQueue(db, options = {}, dependencies = {}) 
             itemId: item.id, action: 'kept_private', frameworkVersion: framework.version,
             missing: normalized.missing
           });
-          continue;
+          return;
         }
       }
       db.exec('BEGIN IMMEDIATE');
@@ -664,6 +670,19 @@ async function runHistoricalFrameworkQueue(db, options = {}, dependencies = {}) 
       updateFrameworkFailure(db, item, error.message || error);
       result.errors.push({ id: item.id, url: item.source_url, message: error.message });
     }
+  };
+  for (let index = 0; index < items.length && index < capacity;) {
+    let allowed = capacity;
+    if (options.adaptiveLoad && index >= minimum) {
+      allowed = Math.min(capacity, adaptiveBatchSize(maximum, minimum, readLoad()));
+      if (index >= allowed) {
+        result.stoppedDueToLoad = true;
+        break;
+      }
+    }
+    const batchSize = Math.min(modelConcurrency, allowed - index, items.length - index);
+    await Promise.all(items.slice(index, index + batchSize).map(processItem));
+    index += batchSize;
   }
   if (result.errors.length) result.status = result.processed ? 'partial' : 'failed';
   return result;

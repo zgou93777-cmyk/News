@@ -15,7 +15,7 @@ test('historical analysis is not blocked behind the PDF OCR queue', () => {
   assert.match(service, /--historical-verify/);
   assert.match(service, /--historical-evidence/);
   assert.match(service, /--historical-analyze/);
-  assert.match(service, /--historical-framework/);
+  assert.doesNotMatch(service, /--historical-framework/);
   assert.match(service, /--historical-release/);
   assert.match(service, /^SuccessExitStatus=2$/m);
 });
@@ -38,4 +38,29 @@ test('production deployment manages the independent historical OCR timer', () =>
   assert.match(script, /policy-monitor-historical-ocr\.timer/);
   assert.match(script, /systemctl enable[\s\S]*policy-monitor-historical-ocr\.timer/);
   assert.match(script, /systemctl start[\s\S]*policy-monitor-historical-ocr\.timer/);
+});
+
+test('historical model framework drains independently with bounded requests', () => {
+  const service = fs.readFileSync(
+    path.join(systemdDir, 'policy-monitor-historical-framework.service'),
+    'utf8'
+  );
+  const timer = fs.readFileSync(
+    path.join(systemdDir, 'policy-monitor-historical-framework.timer'),
+    'utf8'
+  );
+  assert.match(service, /--historical-framework --analysis auto --adaptive-load/);
+  assert.match(service, /--model-concurrency 2/);
+  assert.match(service, /--model-timeout-ms 240000/);
+  assert.match(service, /^TimeoutStartSec=50min$/m);
+  assert.match(service, /^SuccessExitStatus=2$/m);
+  assert.match(timer, /^OnUnitInactiveSec=2min$/m);
+  assert.match(timer, /^Unit=policy-monitor-historical-framework\.service$/m);
+});
+
+test('production deployment manages the independent historical model timer', () => {
+  const script = fs.readFileSync(deployScript, 'utf8');
+  assert.match(script, /policy-monitor-historical-framework\.service/);
+  assert.match(script, /systemctl enable[\s\S]*policy-monitor-historical-framework\.timer/);
+  assert.match(script, /systemctl start[\s\S]*policy-monitor-historical-framework\.timer/);
 });

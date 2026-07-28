@@ -68,7 +68,7 @@ node src/cli.js --historical-evidence --adaptive-load --min-items 5 --max-items 
 node src/cli.js --historical-analyze --adaptive-load --min-items 5 --max-items 100
 
 # 逐篇生成政策问题、工具、对象和执行路径，并反查每条官方原文引用；完整后才进入私有 ready
-node src/cli.js --historical-framework --analysis auto --adaptive-load --min-items 5 --max-items 100
+node src/cli.js --historical-framework --analysis auto --adaptive-load --min-items 2 --max-items 20 --model-concurrency 2 --model-timeout-ms 240000
 
 # 满100条后执行资格、引用和负载回归；不足100条只报告等待
 node src/cli.js --historical-cohort-audit --max-items 100

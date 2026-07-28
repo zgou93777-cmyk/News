@@ -1,0 +1,11 @@
+[Unit]
+Description=Continuously build citation-checked historical policy explanations
+
+[Timer]
+OnBootSec=3min
+OnUnitInactiveSec=2min
+AccuracySec=30s
+Unit=policy-monitor-historical-framework.service
+
+[Install]
+WantedBy=timers.target

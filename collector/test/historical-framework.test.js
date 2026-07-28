@@ -251,3 +251,66 @@ test('auto mode reports the private backlog without a configured model', async (
     db.close();
   }
 });
+
+test('framework queue uses bounded model concurrency', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const fixtures = [
+      createAwaitingFramework(db, 'parallel-a'),
+      createAwaitingFramework(db, 'parallel-b'),
+      createAwaitingFramework(db, 'parallel-c')
+    ];
+    const byId = new Map(fixtures.map((item) => [item.itemId, item]));
+    let active = 0;
+    let maximumActive = 0;
+    const result = await runHistoricalFrameworkQueue(db, {
+      maxItems: 3,
+      modelConfig,
+      modelConcurrency: 2,
+      modelTimeoutMs: 240_000
+    }, {
+      loadSnapshot: idleLoad,
+      requestFramework: async (item) => {
+        active += 1;
+        maximumActive = Math.max(maximumActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return completePayload(byId.get(Number(item.id)));
+      }
+    });
+    assert.equal(result.ready, 3);
+    assert.equal(result.processed, 3);
+    assert.equal(result.modelConcurrency, 2);
+    assert.equal(result.modelTimeoutMs, 240_000);
+    assert.equal(maximumActive, 2);
+  } finally {
+    db.close();
+  }
+});
+
+test('framework timeouts retry promptly even after earlier pipeline attempts', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const item = createAwaitingFramework(db, 'timeout-retry');
+    db.prepare('UPDATE historical_backfill_items SET attempts = 5 WHERE id = ?').run(item.itemId);
+    const startedAt = Date.now();
+    const result = await runHistoricalFrameworkQueue(db, {
+      maxItems: 1,
+      modelConfig
+    }, {
+      loadSnapshot: idleLoad,
+      requestFramework: async () => {
+        throw new Error('The operation was aborted due to timeout');
+      }
+    });
+    assert.equal(result.status, 'failed');
+    const stored = db.prepare('SELECT attempts,last_error,next_attempt_at FROM historical_backfill_items WHERE id = ?')
+      .get(item.itemId);
+    assert.equal(stored.attempts, 6);
+    assert.match(stored.last_error, /timeout/);
+    const retryDelayMinutes = (Date.parse(stored.next_attempt_at) - startedAt) / 60_000;
+    assert.ok(retryDelayMinutes >= 29 && retryDelayMinutes <= 31);
+  } finally {
+    db.close();
+  }
+});

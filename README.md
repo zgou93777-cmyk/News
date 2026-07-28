@@ -47,8 +47,12 @@ sudo cp collector/systemd/policy-monitor-collector.service /etc/systemd/system/
 sudo cp collector/systemd/policy-monitor-collector.timer /etc/systemd/system/
 sudo cp collector/systemd/policy-monitor-historical.service /etc/systemd/system/
 sudo cp collector/systemd/policy-monitor-historical.timer /etc/systemd/system/
+sudo cp collector/systemd/policy-monitor-historical-ocr.service /etc/systemd/system/
+sudo cp collector/systemd/policy-monitor-historical-ocr.timer /etc/systemd/system/
+sudo cp collector/systemd/policy-monitor-historical-framework.service /etc/systemd/system/
+sudo cp collector/systemd/policy-monitor-historical-framework.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now policy-monitor.service policy-monitor-collector.timer policy-monitor-historical.timer
+sudo systemctl enable --now policy-monitor.service policy-monitor-collector.timer policy-monitor-historical.timer policy-monitor-historical-ocr.timer policy-monitor-historical-framework.timer
 ```
 
 Nginx 配置位于 `deploy/xw.http.nginx.conf` 和 `deploy/xw.https.nginx.conf`。启用 HTTPS 前需先准备对应证书路径。

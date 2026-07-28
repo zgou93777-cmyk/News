@@ -1,0 +1,29 @@
+[Unit]
+Description=Policy Monitor citation-checked historical framework queue
+After=network-online.target policy-monitor.service
+Wants=network-online.target
+OnFailure=policy-monitor-alert@%n.service
+
+[Service]
+Type=oneshot
+User=policy-monitor
+Group=policy-monitor
+WorkingDirectory=/opt/policy-monitor/collector
+EnvironmentFile=/etc/policy-monitor/policy-monitor.env
+Environment=NODE_ENV=production
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning /opt/policy-monitor/collector/src/cli.js --historical-framework --analysis auto --adaptive-load --min-items 2 --max-items 20 --model-concurrency 2 --model-timeout-ms 240000
+SuccessExitStatus=2
+TimeoutStartSec=50min
+MemoryMax=512M
+CPUQuota=150%
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/policy-monitor

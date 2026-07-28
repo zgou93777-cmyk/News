@@ -96,7 +96,18 @@ test('historical modes are mutually exclusive and validate a slow bounded range'
   assert.equal(parseArguments(['--historical-verify', '--adaptive-load']).historicalVerify, true);
   assert.equal(parseArguments(['--historical-evidence', '--adaptive-load']).historicalEvidence, true);
   assert.equal(parseArguments(['--historical-analyze', '--adaptive-load']).historicalAnalyze, true);
-  assert.equal(parseArguments(['--historical-framework', '--analysis', 'model', '--adaptive-load']).historicalFramework, true);
+  const framework = parseArguments([
+    '--historical-framework', '--analysis', 'model', '--adaptive-load',
+    '--model-timeout-ms', '240000', '--model-concurrency', '2'
+  ]);
+  assert.equal(framework.historicalFramework, true);
+  assert.equal(framework.modelTimeoutMs, 240_000);
+  assert.equal(framework.modelConcurrency, 2);
+  assert.throws(
+    () => parseArguments(['--historical-framework', '--model-concurrency', '5']),
+    /1 to 4/
+  );
+  assert.throws(() => parseArguments(['--historical-analyze', '--model-timeout-ms', '240000']), /only valid/);
   assert.equal(parseArguments(['--historical-cohort-audit', '--max-items', '100']).historicalCohortAudit, true);
   const cohortApproval = parseArguments([
     '--historical-cohort-approve', '7', '--approved-by', 'reviewer', '--approval-note', 'regression passed'
