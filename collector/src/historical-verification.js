@@ -26,6 +26,14 @@ const KNOWN_ISSUERS = [
   '国家卫生健康委员会', '中国人民银行', '国家统计局', '国家市场监督管理总局',
   '外交部', '内务部', '劳动部', '贸易部', '重工业部', '第一机械工业部'
 ];
+const WEB_PUBLICATION_EXTRACTORS = new Set([
+  'official-html-meta-v1',
+  'official-page-label-v1'
+]);
+
+function isWebPublicationExtractor(extractor) {
+  return WEB_PUBLICATION_EXTRACTORS.has(String(extractor || ''));
+}
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -176,10 +184,19 @@ function extractPublishedEvidence(item, documentNumber) {
     if (/成文|签发|发布|印发|公布|制定/u.test(context)) score += 3;
     if (/(?:会议|大会).{0,24}(?:通过|批准)|(?:通过|批准).{0,24}(?:会议|大会)/u.test(context)) score += 4;
     if (/施行|实施|执行|生效|废止|失效|有效期/u.test(context)) score -= 7;
-    return { ...mention, score, publicationSignal: explicitPublication || (standalone && (nearEnd || lineNumber <= 6)) };
+    const standaloneEdge = standalone && (nearEnd || lineNumber <= 6);
+    return {
+      ...mention,
+      score,
+      explicitPublication,
+      standaloneEdge,
+      publicationSignal: explicitPublication || standaloneEdge
+    };
   }).sort((left, right) => right.score - left.score || right.index - left.index);
   const selected = ranked.find((mention) => mention.score >= 4 && mention.publicationSignal);
-  return selected ? { ...selected, confidence: Math.min(0.99, 0.75 + selected.score * 0.025) } : null;
+  if (!selected) return null;
+  const confidenceFloor = selected.explicitPublication ? 0.97 : 0.95;
+  return { ...selected, confidence: Math.min(0.99, Math.max(confidenceFloor, 0.75 + selected.score * 0.025)) };
 }
 
 function sentenceAt(text, index) {
@@ -803,6 +820,7 @@ module.exports = {
   extractExplicitEndEvidence,
   extractIssuerEvidence,
   extractPublishedEvidence,
+  isWebPublicationExtractor,
   metadataEvidence,
   parseChineseDate,
   runHistoricalVerificationQueue,

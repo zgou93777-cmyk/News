@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 
 const { adaptiveBatchSize, currentLoadSnapshot } = require('./historical-backfill');
 const { officialEvidenceUrl } = require('./historical-source');
-const { checksumMatches } = require('./historical-verification');
+const { checksumMatches, isWebPublicationExtractor } = require('./historical-verification');
 
 const REVIEW_STATUSES = new Set(['verified', 'partial', 'ambiguous', 'watching']);
 const FINAL_EVIDENCE_STATUSES = new Set(['verified', 'not_found', 'not_applicable']);
@@ -30,13 +30,20 @@ function officialUrl(value) {
 }
 
 function loadAnalysisInputs(db, item) {
-  const verification = db.prepare(`
+  const rawVerification = db.prepare(`
     SELECT claim_type, status, value_text, evidence_quote, source_url, search_scope,
       extractor, confidence, observed_at, id
     FROM historical_verification_evidence
     WHERE item_id = ?
     ORDER BY claim_type, status, value_text, source_url, evidence_quote, id
   `).all(item.id);
+  const hasCanonicalPublication = rawVerification.some((row) => row.claim_type === 'published_at'
+    && row.status === 'verified' && !isWebPublicationExtractor(row.extractor));
+  const verification = rawVerification.map((row) => (
+    hasCanonicalPublication && row.claim_type === 'published_at' && isWebPublicationExtractor(row.extractor)
+      ? { ...row, claim_type: 'web_published_at' }
+      : row
+  ));
   const evidence = db.prepare(`
     SELECT evidence.evidence_type, evidence.classification, evidence.title,
       evidence.source_url, evidence.evidence_quote, evidence.observed_at,
