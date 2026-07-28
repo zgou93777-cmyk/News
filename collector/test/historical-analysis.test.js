@@ -174,6 +174,50 @@ test('runtime options cannot lower the confidence floor below 0.95', () => {
   }
 });
 
+test('web publication timestamps do not conflict with policy dates but real policy-date conflicts do', () => {
+  const db = openDatabase(':memory:');
+  try {
+    const targetId = insertTarget(db, 'date-semantics', {
+      implementation: 'not_found',
+      outcome: 'not_found'
+    });
+    const watermark = Number(db.prepare('SELECT max(id) AS id FROM historical_backfill_items').get().id);
+    insertSearches(db, targetId, watermark);
+    const sourceUrl = db.prepare('SELECT source_url FROM historical_backfill_items WHERE id = ?').get(targetId).source_url;
+    const insertDate = db.prepare(`
+      INSERT INTO historical_verification_evidence (
+        item_id, source_item_id, claim_type, status, value_text, evidence_quote,
+        source_url, extractor, confidence, observed_at
+      ) VALUES (?, ?, 'published_at', 'verified', ?, ?, ?, ?, 1, ?)
+    `);
+    insertDate.run(
+      targetId, targetId, '2000-01-10T00:00:00+08:00',
+      'firstpublishedtime: 2000-01-10-10:00:00', sourceUrl,
+      'official-html-meta-v1', '2000-01-10T00:00:00+08:00'
+    );
+
+    let item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(targetId);
+    const accepted = assessHistoricalPolicy(db, item);
+    assert.equal(accepted.releaseEligible, true);
+    assert.equal(accepted.reviewStatus, 'watching');
+    const acceptedAnalysis = JSON.parse(db.prepare(
+      'SELECT analysis_json FROM historical_backfill_items WHERE id = ?'
+    ).get(targetId).analysis_json);
+    assert.ok(acceptedAnalysis.citations.some((entry) => entry.claimType === 'web_published_at'));
+
+    insertDate.run(
+      targetId, targetId, '2000-01-03T00:00:00+08:00',
+      '国务院 2000年1月3日', sourceUrl,
+      'historical-metadata-v2', '2000-01-03T00:00:00+08:00'
+    );
+    item = db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(targetId);
+    const blocked = assessHistoricalPolicy(db, item);
+    assert.equal(blocked.releaseEligible, false);
+    assert.ok(blocked.failedGates.includes('critical_conflicts'));
+  } finally {
+    db.close();
+  }
+});
 test('accepted evidence counts must match the completed search record', () => {
   const db = openDatabase(':memory:');
   try {

@@ -140,6 +140,7 @@ test('publication extraction ignores an incidental same-year date in body text',
     checksum: checksum(signed)
   });
   assert.equal(withPublication.published.value, '1980-02-03T00:00:00+08:00');
+  assert.ok(withPublication.published.confidence >= 0.95);
 });
 
 test('metadata and lifecycle verification store verbatim evidence but no public document', async () => {
