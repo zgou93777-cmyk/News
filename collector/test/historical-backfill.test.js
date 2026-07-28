@@ -196,6 +196,38 @@ test('PDF issues are isolated for manual OCR and article segmentation', async ()
   }
 });
 
+test('historical fetch queue alternates recent and legacy work', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    const rows = [
+      { year: 1954, name: 'legacy-first' },
+      { year: 1980, name: 'legacy-second' },
+      { year: 2024, name: 'recent-second' },
+      { year: 2026, name: 'recent-first' }
+    ];
+    for (const row of rows) {
+      enqueueHistoricalItem(db, {
+        url: `https://www.gov.cn/gongbao/shuju/${row.year}/${row.name}.pdf`,
+        sourceName: 'Official archive',
+        sourceType: 'pdf',
+        itemKind: 'issue',
+        sourceYear: row.year
+      });
+    }
+
+    const result = await runHistoricalQueue(db, { maxItems: 2, delayMs: 0 });
+    assert.deepEqual(
+      result.items.map((item) => item.url),
+      [
+        'https://www.gov.cn/gongbao/shuju/2026/recent-first.pdf',
+        'https://www.gov.cn/gongbao/shuju/1954/legacy-first.pdf'
+      ]
+    );
+  } finally {
+    db.close();
+  }
+});
+
 test('human review requires official evidence and a complete cycle/implementation analysis', () => {
   const item = {
     id: 1,

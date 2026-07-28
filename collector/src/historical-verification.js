@@ -444,12 +444,24 @@ function archiveCoverageComplete(db, sourceYear, options = {}) {
     if (!scan) return { complete: false, reason: `official archive scan incomplete: ${source.id}` };
   }
   const unresolved = Number(db.prepare(`
-    SELECT count(*) AS count FROM historical_backfill_items
-    WHERE coalesce(source_year, 9999) >= ?
-      AND source_status <> 'rejected'
+    SELECT count(*) AS count FROM historical_backfill_items item
+    WHERE coalesce(item.source_year, 9999) >= ?
+      AND item.source_status <> 'rejected'
       AND (
-        (item_kind IN ('index', 'issue') AND stage NOT IN ('indexed', 'published'))
-        OR (item_kind = 'document' AND stage IN ('discovered', 'failed', 'manual_review'))
+        (item.item_kind IN ('index', 'issue') AND item.stage NOT IN ('indexed', 'published')
+          AND NOT (
+            item.item_kind = 'issue' AND item.source_type = 'pdf'
+            AND trim(item.issue_label) <> ''
+            AND EXISTS (
+              SELECT 1 FROM historical_backfill_items sibling
+              WHERE sibling.item_kind = 'issue' AND sibling.source_type = 'html'
+                AND sibling.stage IN ('indexed', 'published')
+                AND sibling.source_year = item.source_year
+                AND sibling.issue_label = item.issue_label
+                AND item.source_url LIKE sibling.source_url || '%'
+            )
+          ))
+        OR (item.item_kind = 'document' AND item.stage IN ('discovered', 'failed', 'manual_review'))
       )
   `).get(sourceYear).count);
   if (unresolved > 0) return { complete: false, reason: `${unresolved} later official archive rows are not extracted` };
@@ -505,6 +517,26 @@ function findLifecycleRelation(db, item) {
     if (item.published_at && Date.parse(published) < Date.parse(item.published_at)) continue;
     const relationType = REPEAL_PATTERN.test(quote) ? 'repeals' : 'supersedes';
     return { successor: candidate, quote, relationType, endedAt: published };
+  }
+  return null;
+}
+
+function findPendingLifecycleRelation(db, item) {
+  if (!item.document_number) return null;
+  const candidates = db.prepare(`
+    SELECT * FROM historical_backfill_items
+    WHERE id <> ? AND item_kind = 'document'
+      AND NOT (source_status = 'verified' AND metadata_status = 'verified')
+      AND source_status <> 'rejected' AND metadata_status <> 'rejected'
+      AND trim(content_text) <> '' AND trim(checksum) <> ''
+      AND coalesce(source_year, 0) >= coalesce(?, 0)
+    ORDER BY coalesce(source_year, 9999), id
+  `).all(item.id, item.source_year);
+  for (const candidate of candidates) {
+    if (!checksumMatches(candidate)) continue;
+    const quote = relationSentences(candidate.content_text, item.document_number)[0];
+    if (!quote) continue;
+    return { candidate, quote };
   }
   return null;
 }
@@ -572,9 +604,15 @@ function verifyLifecycle(db, item, options = {}) {
   const effective = extractEffectiveEvidence(item, item.published_at);
   const explicitEnd = extractExplicitEndEvidence(item);
   const relation = explicitEnd ? null : findLifecycleRelation(db, item);
+  const pendingRelation = explicitEnd || relation ? null : findPendingLifecycleRelation(db, item);
   const coverage = relation || explicitEnd
     ? { complete: true, reason: 'explicit official lifecycle evidence found' }
-    : archiveCoverageComplete(db, item.source_year, options);
+    : pendingRelation
+      ? {
+        complete: false,
+        reason: `potential lifecycle relation awaits metadata verification: ${pendingRelation.candidate.source_url}`
+      }
+      : archiveCoverageComplete(db, item.source_year, options);
   db.exec('BEGIN IMMEDIATE');
   try {
     let effectiveStatus = 'not_found';
@@ -683,10 +721,19 @@ function verifyLifecycle(db, item, options = {}) {
 
 function verificationQueueItems(db, maximum) {
   return db.prepare(`
-    SELECT * FROM historical_backfill_items
-    WHERE item_kind = 'document' AND stage IN ('needs_review', 'source_verified')
-      AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    ORDER BY CASE stage WHEN 'needs_review' THEN 0 ELSE 1 END, coalesce(source_year, 9999), id
+    WITH candidates AS (
+      SELECT * FROM historical_backfill_items
+      WHERE item_kind = 'document' AND stage IN ('needs_review', 'source_verified')
+        AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ), ranked AS (
+      SELECT candidates.*,
+        row_number() OVER (
+          PARTITION BY stage ORDER BY coalesce(source_year, 0) DESC, id DESC
+        ) AS stage_rank
+      FROM candidates
+    )
+    SELECT * FROM ranked
+    ORDER BY stage_rank, CASE stage WHEN 'needs_review' THEN 0 ELSE 1 END
     LIMIT ?
   `).all(maximum);
 }

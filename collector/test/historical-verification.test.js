@@ -5,7 +5,9 @@ const crypto = require('node:crypto');
 const test = require('node:test');
 
 const { openDatabase } = require('../../server/src/db');
+const { enqueueHistoricalItem } = require('../src/historical-backfill');
 const {
+  archiveCoverageComplete,
   extractDocumentNumbers,
   extractExplicitEndEvidence,
   extractIssuerEvidence,
@@ -279,7 +281,7 @@ test('unverified later text cannot close a lifecycle and known archive gaps prev
     const result = verifyLifecycle(db, db.prepare('SELECT * FROM historical_backfill_items WHERE id = ?').get(oldId));
     assert.equal(result.complete, false);
     assert.equal(result.cycle.endedStatus, 'pending');
-    assert.match(result.cycle.searchScope, /official archive gap 1967-1979/);
+    assert.match(result.cycle.searchScope, /potential lifecycle relation awaits metadata verification/);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM historical_policy_relations').get().count, 0);
   } finally {
     db.close();
@@ -354,6 +356,54 @@ test('rejected PDF children do not prevent a complete lifecycle corpus decision'
   }
 });
 
+test('an indexed official HTML issue covers only its exact PDF companion', () => {
+  const db = openDatabase(':memory:');
+  try {
+    completeArchiveScans(db);
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/2024/issue_12000/',
+      sourceName: 'Official Gazette',
+      sourceType: 'html',
+      itemKind: 'issue',
+      sourceYear: 2024,
+      issueLabel: 'Issue 1'
+    });
+    const htmlId = Number(db.prepare('SELECT last_insert_rowid() AS id').get().id);
+    db.prepare("UPDATE historical_backfill_items SET stage = 'indexed' WHERE id = ?").run(htmlId);
+
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/2024/issue_12000/material/gwygb202401.pdf',
+      sourceName: 'Official Gazette',
+      sourceType: 'pdf',
+      itemKind: 'issue',
+      sourceYear: 2024,
+      issueLabel: 'Issue 1'
+    });
+    const pdfId = Number(db.prepare('SELECT last_insert_rowid() AS id').get().id);
+    db.prepare("UPDATE historical_backfill_items SET stage = 'manual_review' WHERE id = ?").run(pdfId);
+
+    const covered = archiveCoverageComplete(db, 2024);
+    assert.equal(covered.complete, true);
+
+    enqueueHistoricalItem(db, {
+      url: 'https://www.gov.cn/gongbao/2024/issue_12001/material/gwygb202402.pdf',
+      sourceName: 'Official Gazette',
+      sourceType: 'pdf',
+      itemKind: 'issue',
+      sourceYear: 2024,
+      issueLabel: 'Issue 2'
+    });
+    const unmatchedId = Number(db.prepare('SELECT last_insert_rowid() AS id').get().id);
+    db.prepare("UPDATE historical_backfill_items SET stage = 'manual_review' WHERE id = ?").run(unmatchedId);
+
+    const blocked = archiveCoverageComplete(db, 2024);
+    assert.equal(blocked.complete, false);
+    assert.match(blocked.reason, /1 later official archive row/);
+  } finally {
+    db.close();
+  }
+});
+
 test('missing core metadata remains private and records the missing fields', async () => {
   const db = openDatabase(':memory:');
   try {
@@ -373,6 +423,55 @@ test('missing core metadata remains private and records the missing fields', asy
     assert.match(item.last_error, /issuer/);
     assert.match(item.last_error, /published_at/);
     assert.equal(db.prepare('SELECT COUNT(*) AS count FROM documents').get().count, 0);
+  } finally {
+    db.close();
+  }
+});
+
+test('verification queue interleaves metadata and lifecycle work newest first', async () => {
+  const db = openDatabase(':memory:');
+  try {
+    completeArchiveScans(db);
+    const metadataNewest = insertDocument(db, {
+      url: 'https://www.gov.cn/gongbao/2026/incomplete.htm',
+      year: 2026,
+      title: 'Incomplete 2026',
+      text: 'Incomplete 2026 policy text. '.repeat(20),
+      stage: 'needs_review'
+    });
+    const lifecycleNewest = insertDocument(db, {
+      url: 'https://www.gov.cn/gongbao/2024/verified.htm',
+      year: 2024,
+      title: 'Verified 2024',
+      issuer: 'State Council',
+      publishedAt: '2024-01-01T00:00:00+08:00',
+      text: 'Verified 2024 policy text.',
+      stage: 'source_verified', sourceStatus: 'verified', metadataStatus: 'verified'
+    });
+    const metadataOlder = insertDocument(db, {
+      url: 'https://www.gov.cn/gongbao/2025/incomplete.htm',
+      year: 2025,
+      title: 'Incomplete 2025',
+      text: 'Incomplete 2025 policy text. '.repeat(20),
+      stage: 'needs_review'
+    });
+    const lifecycleOlder = insertDocument(db, {
+      url: 'https://www.gov.cn/gongbao/2023/verified.htm',
+      year: 2023,
+      title: 'Verified 2023',
+      issuer: 'State Council',
+      publishedAt: '2023-01-01T00:00:00+08:00',
+      text: 'Verified 2023 policy text.',
+      stage: 'source_verified', sourceStatus: 'verified', metadataStatus: 'verified'
+    });
+
+    const result = await runHistoricalVerificationQueue(db, { maxItems: 4 }, {
+      loadSnapshot: () => ({ normalizedLoad: 0, freeMemoryRatio: 0.5 })
+    });
+    assert.deepEqual(
+      result.items.map((item) => item.id),
+      [metadataNewest, lifecycleNewest, metadataOlder, lifecycleOlder]
+    );
   } finally {
     db.close();
   }

@@ -332,7 +332,7 @@ function evidenceQueueItems(db, maximum) {
         )
       )
       AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    ORDER BY coalesce(source_year, 9999), id
+    ORDER BY coalesce(source_year, 0) DESC, id DESC
     LIMIT ?
   `).all(maximum);
 }

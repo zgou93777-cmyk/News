@@ -241,10 +241,19 @@ async function runHistoricalDiscovery(db, options = {}, dependencies = {}) {
 function queueItems(db, maximum) {
   const placeholders = PROCESSABLE_STAGES.map(() => '?').join(', ');
   return db.prepare(`
-    SELECT * FROM historical_backfill_items
-    WHERE stage IN (${placeholders})
-      AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    ORDER BY coalesce(source_year, 9999), id
+    WITH candidates AS (
+      SELECT * FROM historical_backfill_items
+      WHERE stage IN (${placeholders})
+        AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    ), ranked AS (
+      SELECT candidates.*,
+        row_number() OVER (ORDER BY coalesce(source_year, 9999) DESC, id DESC) AS newest_rank,
+        row_number() OVER (ORDER BY coalesce(source_year, 9999), id) AS oldest_rank
+      FROM candidates
+    )
+    SELECT * FROM ranked
+    ORDER BY min(newest_rank, oldest_rank),
+      CASE WHEN newest_rank <= oldest_rank THEN 0 ELSE 1 END
     LIMIT ?
   `).all(...PROCESSABLE_STAGES, maximum);
 }

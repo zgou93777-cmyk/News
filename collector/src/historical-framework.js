@@ -573,7 +573,7 @@ function frameworkQueueItems(db, maximum) {
     WHERE item.item_kind = 'document' AND item.stage = 'lifecycle_verified'
       AND item.analysis_status = 'verified' AND assessment.release_eligible = 1
       AND (item.next_attempt_at IS NULL OR item.next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    ORDER BY coalesce(item.source_year, 9999), item.id
+    ORDER BY coalesce(item.source_year, 0) DESC, item.id DESC
     LIMIT ?
   `).all(maximum);
 }

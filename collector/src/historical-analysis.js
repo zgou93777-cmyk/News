@@ -436,7 +436,7 @@ function analysisQueueItems(db, maximum) {
       AND implementation_status IN ('verified', 'not_found', 'not_applicable')
       AND outcome_status IN ('verified', 'not_found', 'not_applicable')
       AND (next_attempt_at IS NULL OR next_attempt_at <= strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
-    ORDER BY coalesce(source_year, 9999), id
+    ORDER BY coalesce(source_year, 0) DESC, id DESC
     LIMIT ?
   `).all(maximum);
 }
